@@ -1,5 +1,17 @@
 # Copyright © 2022 Collabora Ltd. and Red Hat Inc.
 # SPDX-License-Identifier: MIT
+nvrm_files = files(
+  'nvkmd/nvrm/nvkmd_nvrm.h',
+  'nvkmd/nvrm/nvkmd_nvrm_ctx.c',
+  'nvkmd/nvrm/nvkmd_nvrm_dev.c',
+  'nvkmd/nvrm/nvkmd_nvrm_mem.c',
+  'nvkmd/nvrm/nvkmd_nvrm_pdev.c',
+  'nvkmd/nvrm/nvkmd_nvrm_va.c',
+  'nvkmd/nvrm/nvkmd_nvrm_sync.c',
+  'nvkmd/nvrm/nvRmApi.c',
+  'nvkmd/nvrm/nvRmSemSurf.c',
+)
+
 nvk_files = files(
   'nvk_acceleration_structure.c',
   'nvk_buffer.c',
@@ -78,16 +90,11 @@ nvk_files = files(
 # 'nvkmd/nouveau/nvkmd_nouveau_mem.c',
 # 'nvkmd/nouveau/nvkmd_nouveau_pdev.c',
 # 'nvkmd/nouveau/nvkmd_nouveau_va.c',
-  'nvkmd/nvrm/nvkmd_nvrm.h',
-  'nvkmd/nvrm/nvkmd_nvrm_ctx.c',
-  'nvkmd/nvrm/nvkmd_nvrm_dev.c',
-  'nvkmd/nvrm/nvkmd_nvrm_mem.c',
-  'nvkmd/nvrm/nvkmd_nvrm_pdev.c',
-  'nvkmd/nvrm/nvkmd_nvrm_va.c',
-  'nvkmd/nvrm/nvkmd_nvrm_sync.c',
   'nvkmd/nvkmd.c',
   'nvkmd/nvkmd.h',
 )
+
+nvk_files += nvrm_files
 
 nvkcl_files = files(
   'cl/nvk_query.cl',
@@ -158,7 +165,7 @@ nvk_deps = [
   idep_vulkan_wsi_headers,
 ]
 
-nvk_flags = []
+nvk_flags = ['-DNVTYPES_USE_STDINT=1']
 
 nvk_build_id = get_option('nvk-build-id')
 if nvk_build_id != ''
@@ -183,6 +190,10 @@ libnvk = static_library(
     inc_include,
     inc_src,
     inc_nouveau_winsys,
+    'nvkmd/nvrm/open-gpu-kernel-modules/src/nvidia/arch/nvalloc/common/inc',
+    'nvkmd/nvrm/open-gpu-kernel-modules/src/nvidia/arch/nvalloc/unix/include',
+    'nvkmd/nvrm/open-gpu-kernel-modules/src/common/sdk/nvidia/inc',
+    'nvkmd/nvrm/open-gpu-kernel-modules/src/nvidia/inc/kernel',
   ],
   dependencies : nvk_deps,
   c_args : [no_override_init_args, nvk_flags],
