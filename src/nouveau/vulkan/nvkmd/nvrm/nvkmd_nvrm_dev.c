@@ -8,6 +8,7 @@
 #include "vk_log.h"
 
 #include "util/u_memory.h"
+#include "util/hash_table.h"
 
 #include "nvRmApi.h"
 
@@ -30,6 +31,12 @@ nvkmd_nvrm_create_dev(struct nvkmd_pdev *_pdev,
    list_inithead(&dev->base.mems);
    simple_mtx_init(&dev->base.mems_mutex, mtx_plain);
 
+   dev->mappings = _mesa_hash_table_create(NULL, _mesa_hash_pointer, _mesa_key_pointer_equal);
+   if (dev->mappings == NULL) {
+   	  nvkmd_dev_destroy(&dev->base);
+      return vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+
    *dev_out = &dev->base;
 
    return VK_SUCCESS;
@@ -40,6 +47,9 @@ nvkmd_nvrm_dev_destroy(struct nvkmd_dev *_dev)
 {
    struct nvkmd_nvrm_dev *dev = nvkmd_nvrm_dev(_dev);
    struct nvkmd_nvrm_pdev *pdev = nvkmd_nvrm_pdev(dev->base.pdev);
+
+   if (dev->mappings != NULL)
+      _mesa_hash_table_destroy(dev->mappings, NULL);
 
    FREE(dev);
 }
