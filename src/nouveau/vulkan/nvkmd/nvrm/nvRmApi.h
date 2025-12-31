@@ -10,7 +10,7 @@
 
 
 #define NVRM_CTL_NODE_NAME "/dev/nvidiactl"
-#define NVRM_ACTUAL_NODE_NAME "/dev/nvidia%u"
+#define NVRM_ACTUAL_NODE_NAME "/dev/graphics/nvidia%u"
 
 
 typedef struct NvRmApi {
