@@ -13,11 +13,18 @@
 #include "class/cl003e.h" // NV01_MEMORY_SYSTEM
 #include "class/cl0040.h" // NV01_MEMORY_LOCAL_USER
 
+#include "ctrl/ctrl0000/ctrl0000unix.h" // NV0000_CTRL_CMD_OS_UNIX_{EXPORT,IMPORT}_OBJECT_*
+#include "ctrl/ctrl0000/ctrl0000client.h" // NV0000_CTRL_CMD_CLIENT_GET_ADDR_SPACE_TYPE
+#include "ctrl/ctrl0041.h" // NV0041_CTRL_CMD_GET_SURFACE_INFO
+
+#include <unistd.h>
+
 
 static VkResult
 create_mem_or_close_bo(struct nvkmd_nvrm_dev *dev,
                        struct vk_object_base *log_obj,
                        enum nvkmd_mem_flags mem_flags,
+                       bool isSystemMem,
                        NvHandle hMemoryPhys, uint64_t size_B,
                        enum nvkmd_va_flags va_flags,
                        uint8_t pte_kind, uint64_t va_align_B,
@@ -38,7 +45,7 @@ create_mem_or_close_bo(struct nvkmd_nvrm_dev *dev,
    nvkmd_mem_init(&dev->base, &mem->base, &nvkmd_nvrm_mem_ops,
                   mem_flags, size_B, dev->base.pdev->bind_align_B);
    mem->hMemoryPhys = hMemoryPhys;
-   mem->isSystemMem = (mem_flags & NVKMD_MEM_GART) != 0;
+   mem->isSystemMem = isSystemMem;
 
    result = nvkmd_dev_alloc_va(&dev->base, log_obj,
                                va_flags, pte_kind,
@@ -143,7 +150,8 @@ nvkmd_nvrm_alloc_tiled_mem(struct nvkmd_dev *_dev,
       return VK_ERROR_OUT_OF_DEVICE_MEMORY;
    }
 
-   return create_mem_or_close_bo(dev, log_obj, flags, hMemoryPhys, size_B,
+   return create_mem_or_close_bo(dev, log_obj, flags, isSystemMem,
+                                 hMemoryPhys, size_B,
                                  va_flags, pte_kind, va_align_B,
                                  mem_out);
 }
@@ -153,7 +161,76 @@ nvkmd_nvrm_import_dma_buf(struct nvkmd_dev *_dev,
                              struct vk_object_base *log_obj,
                              int fd, struct nvkmd_mem **mem_out)
 {
-   return vk_errorf(log_obj, VK_ERROR_UNKNOWN, "nvkmd_nvrm_import_dma_buf: not implemented");
+   struct nvkmd_nvrm_dev *dev = nvkmd_nvrm_dev(_dev);
+   struct nvkmd_nvrm_pdev *pdev = nvkmd_nvrm_pdev(dev->base.pdev);
+
+   struct NvRmApi rm;
+   nvkmd_nvrm_dev_api_ctl(pdev, &rm);
+
+   NV0000_CTRL_OS_UNIX_IMPORT_OBJECT_FROM_FD_PARAMS importParams = {
+      .fd = fd,
+      .object = {
+         .type = NV0000_CTRL_OS_UNIX_EXPORT_OBJECT_TYPE_RM,
+         .data.rmObject = {
+            .hDevice = pdev->hDevice,
+            .hParent = pdev->hDevice,
+            .hObject = 0, /* allocated by RM */
+         },
+      },
+   };
+   NV_STATUS nvRes = nvRmApiControl(&rm, pdev->hClient,
+                                    NV0000_CTRL_CMD_OS_UNIX_IMPORT_OBJECT_FROM_FD,
+                                    &importParams, sizeof(importParams));
+   if (nvRes != NV_OK) {
+      return vk_errorf(log_obj, VK_ERROR_INVALID_EXTERNAL_HANDLE,
+                       "OS_UNIX_IMPORT_OBJECT_FROM_FD failed: %#x", nvRes);
+   }
+   NvHandle hMemoryPhys = importParams.object.data.rmObject.hObject;
+
+   /* Recover address space (sysmem vs vidmem) from the client. */
+   NV0000_CTRL_CLIENT_GET_ADDR_SPACE_TYPE_PARAMS addrSpaceParams = {
+      .hObject = hMemoryPhys,
+   };
+   nvRes = nvRmApiControl(&rm, pdev->hClient,
+                          NV0000_CTRL_CMD_CLIENT_GET_ADDR_SPACE_TYPE,
+                          &addrSpaceParams, sizeof(addrSpaceParams));
+   if (nvRes != NV_OK) {
+      nvRmApiFree(&rm, hMemoryPhys);
+      return vk_errorf(log_obj, VK_ERROR_INVALID_EXTERNAL_HANDLE,
+                       "CLIENT_GET_ADDR_SPACE_TYPE failed: %#x", nvRes);
+   }
+   const bool isSystemMem =
+      addrSpaceParams.addrSpaceType == NV0000_CTRL_CMD_CLIENT_GET_ADDR_SPACE_TYPE_SYSMEM;
+
+   /* Recover physical size from the memory object itself. */
+   NV0041_CTRL_SURFACE_INFO sizeInfo = {
+      .index = NV0041_CTRL_SURFACE_INFO_INDEX_PHYS_SIZE,
+   };
+   NV0041_CTRL_GET_SURFACE_INFO_PARAMS surfInfoParams = {
+      .surfaceInfoListSize = 1,
+      .surfaceInfoList = (NvP64)(uintptr_t)&sizeInfo,
+   };
+   nvRes = nvRmApiControl(&rm, hMemoryPhys,
+                          NV0041_CTRL_CMD_GET_SURFACE_INFO,
+                          &surfInfoParams, sizeof(surfInfoParams));
+   if (nvRes != NV_OK) {
+      nvRmApiFree(&rm, hMemoryPhys);
+      return vk_errorf(log_obj, VK_ERROR_INVALID_EXTERNAL_HANDLE,
+                       "GET_SURFACE_INFO[PHYS_SIZE] failed: %#x", nvRes);
+   }
+   const uint64_t size_B =
+      (uint64_t)sizeInfo.data * NV0041_CTRL_SURFACE_INFO_PHYS_SIZE_SCALE_FACTOR;
+
+   enum nvkmd_mem_flags mem_flags = NVKMD_MEM_SHARED | NVKMD_MEM_CAN_MAP;
+   mem_flags |= isSystemMem ? NVKMD_MEM_GART : NVKMD_MEM_LOCAL;
+
+   const enum nvkmd_va_flags va_flags = isSystemMem ? NVKMD_VA_GART : 0;
+   const uint64_t va_align_B = dev->base.pdev->bind_align_B;
+
+   return create_mem_or_close_bo(dev, log_obj, mem_flags, isSystemMem,
+                                 hMemoryPhys, size_B,
+                                 va_flags, 0 /* pte_kind */, va_align_B,
+                                 mem_out);
 }
 
 static void
@@ -252,8 +329,46 @@ nvkmd_nvrm_mem_export_dma_buf(struct nvkmd_mem *_mem,
                                  int *fd_out)
 {
    struct nvkmd_nvrm_mem *mem = nvkmd_nvrm_mem(_mem);
+   struct nvkmd_nvrm_dev *dev = nvkmd_nvrm_dev(_mem->dev);
+   struct nvkmd_nvrm_pdev *pdev = nvkmd_nvrm_pdev(dev->base.pdev);
 
-   return VK_ERROR_UNKNOWN;
+   struct NvRmApi rm;
+   nvkmd_nvrm_dev_api_ctl(pdev, &rm);
+
+   /* Fresh nvidiactl fd serves as the carrier; the kernel attaches the
+    * exported handle to its nv_file_private. The fd may be sent across
+    * processes via SCM_RIGHTS; closing it (in any process) drops the
+    * export ref via rm_cleanup_file_private.
+    */
+   int carrier_fd = open(NVRM_CTL_NODE_NAME, O_RDWR | O_CLOEXEC);
+   if (carrier_fd < 0) {
+      return vk_errorf(log_obj, VK_ERROR_TOO_MANY_OBJECTS,
+                       "open(%s) failed", NVRM_CTL_NODE_NAME);
+   }
+
+   NV0000_CTRL_OS_UNIX_EXPORT_OBJECT_TO_FD_PARAMS exportParams = {
+      .fd = carrier_fd,
+      .flags = NV0000_CTRL_OS_UNIX_EXPORT_OBJECT_TO_FD_FLAGS_EMPTY_FD_FALSE,
+      .object = {
+         .type = NV0000_CTRL_OS_UNIX_EXPORT_OBJECT_TYPE_RM,
+         .data.rmObject = {
+            .hDevice = pdev->hDevice,
+            .hParent = pdev->hDevice,
+            .hObject = mem->hMemoryPhys,
+         },
+      },
+   };
+   NV_STATUS nvRes = nvRmApiControl(&rm, pdev->hClient,
+                                    NV0000_CTRL_CMD_OS_UNIX_EXPORT_OBJECT_TO_FD,
+                                    &exportParams, sizeof(exportParams));
+   if (nvRes != NV_OK) {
+      close(carrier_fd);
+      return vk_errorf(log_obj, VK_ERROR_TOO_MANY_OBJECTS,
+                       "OS_UNIX_EXPORT_OBJECT_TO_FD failed: %#x", nvRes);
+   }
+
+   *fd_out = carrier_fd;
+   return VK_SUCCESS;
 }
 
 static uint32_t
