@@ -7,6 +7,7 @@
 
 #include <stdio.h>
 #include <poll.h>
+#include <string.h>
 #include <inttypes.h>
 
 #include "vk_log.h"
@@ -20,6 +21,7 @@
 #include "class/cl2080_notification.h" // NV2080_ENGINE_TYPE_GRAPHICS
 #include "class/clc36f.h" // VOLTA_CHANNEL_GPFIFO_A
 #include "class/cla16f.h" // KeplerBControlGPFifo
+#include "class/cl906fsw.h" // NV906F_NOTIFIERS_RC
 #include "class/cl0005.h" // NV01_EVENT
 #include "ctrl/ctrla06f/ctrla06fgpfifo.h" // NVA06F_CTRL_CMD_BIND
 #include "ctrl/ctrlc36f.h" // NVC36F_CTRL_CMD_INTERNAL_GPFIFO_GET_WORK_SUBMIT_TOKEN
@@ -30,11 +32,67 @@
 #define NV_CHECK(nvRes) {NV_STATUS _nvRes = nvRes; if (_nvRes != NV_OK) {vkRes = vk_error(log_obj, VK_ERROR_UNKNOWN); goto error;}}
 #define VK_CHECK(vkResIn) {VkResult _vkRes = vkResIn; if (_vkRes != VK_SUCCESS) {vkRes = vk_error(log_obj, _vkRes); goto error;}}
 
+#define NVRM_CTX_CMDBUF_BYTES   0x80000
+#define NVRM_CTX_GPFIFO_ENTRIES 0x8000
+
+
+/* Completed-fence value: the highest wSeq the GPU has released into ctx->sem. */
+static uint64_t
+ctx_completed(struct nvkmd_nvrm_exec_ctx *ctx)
+{
+	return *(volatile uint64_t *)ctx->sem->map;
+}
+
+/* True once RM has reported a robust-channel error on this channel. */
+static bool
+ctx_check_error(struct nvkmd_nvrm_exec_ctx *ctx)
+{
+	volatile NvNotification *notifiers = ctx->notifier->map;
+	return notifiers[NV906F_NOTIFIERS_RC].status != 0;
+}
+
+static uint32_t
+ctx_slot_dwords(void)
+{
+	return (NVRM_CTX_CMDBUF_BYTES / 4) / NVRM_CTX_CMDBUF_SLOTS;
+}
+
+/* GPU virtual address of the current cmdBuf slot. */
+static uint64_t
+ctx_slot_gpu_base(struct nvkmd_nvrm_exec_ctx *ctx)
+{
+	return ctx->cmdBuf->va->addr +
+		(uint64_t)ctx->cmdBufCurSlot * ctx_slot_dwords() * 4;
+}
+
+/* (Re)initialise the push writer into the current cmdBuf slot. */
+static void
+ctx_begin_slot(struct nvkmd_nvrm_exec_ctx *ctx)
+{
+	uint32_t slotDwords = ctx_slot_dwords();
+	uint32_t *base = (uint32_t *)ctx->cmdBuf->map + ctx->cmdBufCurSlot * slotDwords;
+	nv_push_init(&ctx->push, base, slotDwords, BITFIELD_BIT(SUBC_NV9097));
+	ctx->cmdBufSubmittedDw = 0;
+}
+
 
 static void
 write_gp_fifo_entry(struct nvkmd_nvrm_exec_ctx *ctx, const struct nvkmd_ctx_exec *exec)
 {
 	//fprintf(stderr, "write_gp_fifo_entry(%#" PRIx64 ", %#" PRIx32 ")\n", exec->addr, exec->size_B);
+	uint32_t next = (uint32_t)((ctx->gpPut + 1) % NVRM_CTX_GPFIFO_ENTRIES);
+
+	/* Back-pressure: never let GPPut catch the host's GPGet. Earlier
+	 * submissions have been doorbelled, so the host keeps draining and GPGet
+	 * advances; bail out on a dead channel rather than spin forever. */
+	KeplerBControlGPFifo *userD = ctx->userD->map;
+	while (next == (userD->GPGet % NVRM_CTX_GPFIFO_ENTRIES)) {
+		if (ctx_check_error(ctx))
+			break;
+		struct pollfd pfd = { .fd = ctx->osEvent, .events = POLLIN | POLLPRI };
+		poll(&pfd, 1, 100);
+	}
+
 	uint32_t *ptr = (uint32_t*)ctx->gpFifo->map + 2*ctx->gpPut;
 
 	ptr[0] = DRF_NUM(A16F, _GP_ENTRY0, _GET, NvU64_LO32(exec->addr) >> 2);
@@ -43,7 +101,25 @@ write_gp_fifo_entry(struct nvkmd_nvrm_exec_ctx *ctx, const struct nvkmd_ctx_exec
 		DRF_NUM(A16F, _GP_ENTRY1, _LENGTH, (exec->size_B >> 2)) |
 		DRF_NUM(A16F, _GP_ENTRY1, _SYNC, (exec->no_prefetch ? NVA16F_GP_ENTRY1_SYNC_WAIT : NVA16F_GP_ENTRY1_SYNC_PROCEED));
 
-	ctx->gpPut = (ctx->gpPut + 1) % 0x8000;
+	ctx->gpPut = next;
+}
+
+/* Turn the dwords written to ctx->push since the last segment into one GP
+ * entry. Lets wait() (acquires) and signal()/flush() (releases + fence) land
+ * as separate GP entries on either side of the exec entries. */
+static void
+emit_push_segment(struct nvkmd_nvrm_exec_ctx *ctx)
+{
+	uint32_t total = nv_push_dw_count(&ctx->push);
+	if (total <= ctx->cmdBufSubmittedDw)
+		return;
+
+	struct nvkmd_ctx_exec exec = {
+		.addr = ctx_slot_gpu_base(ctx) + (uint64_t)ctx->cmdBufSubmittedDw * 4,
+		.size_B = (total - ctx->cmdBufSubmittedDw) * 4,
+	};
+	write_gp_fifo_entry(ctx, &exec);
+	ctx->cmdBufSubmittedDw = total;
 }
 
 static void
@@ -105,8 +181,14 @@ nvkmd_nvrm_create_exec_ctx(struct nvkmd_dev *_dev,
    VK_CHECK(nvkmd_dev_alloc_mapped_mem(_dev, log_obj,  0x1000,  0x1000, NVKMD_MEM_GART, NVKMD_MEM_MAP_RDWR,  &ctx->notifier));
    VK_CHECK(nvkmd_dev_alloc_mapped_mem(_dev, log_obj, 0x80000, 0x10000, NVKMD_MEM_LOCAL, NVKMD_MEM_MAP_RDWR, &ctx->userD));
    VK_CHECK(nvkmd_dev_alloc_mapped_mem(_dev, log_obj, 0x40000,  0x1000, NVKMD_MEM_GART, NVKMD_MEM_MAP_RDWR,  &ctx->gpFifo));
-   VK_CHECK(nvkmd_dev_alloc_mapped_mem(_dev, log_obj, 0x10000,  0x1000, NVKMD_MEM_GART, NVKMD_MEM_MAP_RDWR,  &ctx->cmdBuf));
+   VK_CHECK(nvkmd_dev_alloc_mapped_mem(_dev, log_obj, NVRM_CTX_CMDBUF_BYTES, 0x1000, NVKMD_MEM_GART, NVKMD_MEM_MAP_RDWR, &ctx->cmdBuf));
    VK_CHECK(nvkmd_dev_alloc_mapped_mem(_dev, log_obj,  0x1000,  0x1000, NVKMD_MEM_GART, NVKMD_MEM_MAP_RDWR,  &ctx->sem));
+
+   /* The fence value and the RC error notifier are read in steady state
+    * (ctx_completed / ctx_check_error); start them at zero rather than
+    * trusting freshly allocated GART to be cleared. */
+   memset(ctx->sem->map, 0, ctx->sem->size_B);
+   memset(ctx->notifier->map, 0, ctx->notifier->size_B);
 
 	NV_CONTEXT_DMA_ALLOCATION_PARAMS ctxDmaParams = {
 		.flags =
@@ -176,7 +258,7 @@ nvkmd_nvrm_create_exec_ctx(struct nvkmd_dev *_dev,
 		.hSrcResource = pdev->hSubdevice,
 		.hClass = NV01_EVENT_OS_EVENT,
 		.notifyIndex =
-			NV2080_NOTIFIERS_GRAPHICS |
+			NV2080_NOTIFIERS_FIFO_EVENT_MTHD |
 			NV01_EVENT_NONSTALL_INTR |
 			NV01_EVENT_WITHOUT_EVENT_DATA |
 			NV01_EVENT_SUBDEVICE_SPECIFIC |
@@ -185,7 +267,7 @@ nvkmd_nvrm_create_exec_ctx(struct nvkmd_dev *_dev,
 	};
    NV_CHECK(nvRmApiAlloc(&rm, pdev->hSubdevice, &ctx->hEvent, NV01_EVENT_OS_EVENT, &eventParams));
 
-   nv_push_init(&ctx->push, ctx->cmdBuf->map, 0x10000 / 4, BITFIELD_BIT(SUBC_NV9097));
+   ctx_begin_slot(ctx);
 
    *ctx_out = &ctx->base;
    return VK_SUCCESS;
@@ -236,6 +318,17 @@ nvkmd_nvrm_exec_ctx_wait(struct nvkmd_ctx *_ctx,
 {
    struct nvkmd_nvrm_exec_ctx *ctx = nvkmd_nvrm_exec_ctx(_ctx);
 
+   /* In-channel semaphore acquire per wait. They must precede the exec GP
+    * entries, so seal them into their own GP entry now. Safe now that flush()
+    * is non-blocking: the host stalls on the acquire without the CPU holding
+    * a fence wait, so wait-before-signal can't deadlock. */
+   for (uint32_t i = 0; i < wait_count; i++) {
+      uint64_t addr = nvkmd_nvrm_sync_gpu_addr(waits[i].sync);
+      uint64_t value = nvkmd_nvrm_sync_gpu_wait_value(waits[i].sync, waits[i].wait_value);
+      write_semaphore_acquire(&ctx->push, addr, value);
+   }
+   emit_push_segment(ctx);
+
    return VK_SUCCESS;
 }
 
@@ -252,49 +345,41 @@ nvkmd_nvrm_exec_ctx_flush(struct nvkmd_ctx *_ctx,
    NvNotification *notifiers = ctx->notifier->map;
    NvNotification *submitTokenNotifier = &notifiers[NV_CHANNELGPFIFO_NOTIFICATION_TYPE_WORK_SUBMIT_TOKEN];
    KeplerBControlGPFifo *userD = ctx->userD->map;
-   uint64_t *semAdr = (uint64_t*)ctx->sem->map;
    uint64_t semAdrGpu = ctx->sem->va->addr;
 
    ctx->wSeq++;
 
+   /* Channel fence: drained-state marker the blocking wait below polls on.
+    * emit_push_segment turns it (plus any signal releases already written by
+    * exec_ctx_signal) into a GP entry after the exec work. */
    write_semaphore_release(&ctx->push, semAdrGpu, ctx->wSeq, true);
-
-   struct nvkmd_ctx_exec semExec = {
-   	.addr = ctx->cmdBuf->va->addr,
-   	.size_B = 4*nv_push_dw_count(&ctx->push),
-   };
-
-   write_gp_fifo_entry(ctx, &semExec);
+   emit_push_segment(ctx);
 
    userD->GPPut = ctx->gpPut;
 
    volatile NvU32 *doorbell = (void*)((NvU8*)pdev->usermodeMap.address + NVC361_NOTIFY_CHANNEL_PENDING);
    *doorbell = submitTokenNotifier->info32;
 
-   for (;;) {
-      uint64_t rSeq = *semAdr;
-      if (rSeq == ctx->wSeq) {
+   /* Non-blocking: the work is submitted; we don't wait for it to retire.
+    * Tag this slot with the fence that frees it, advance to the next slot,
+    * and only stall if the pipeline is full (that slot's prior fence hasn't
+    * completed yet). */
+   ctx->cmdBufSlotFence[ctx->cmdBufCurSlot] = ctx->wSeq;
+   ctx->cmdBufCurSlot = (ctx->cmdBufCurSlot + 1) % NVRM_CTX_CMDBUF_SLOTS;
+
+   VkResult result = VK_SUCCESS;
+   while (ctx_completed(ctx) < ctx->cmdBufSlotFence[ctx->cmdBufCurSlot]) {
+      if (ctx_check_error(ctx)) {
+         result = vk_error(log_obj, VK_ERROR_DEVICE_LOST);
          break;
       }
-		struct pollfd pollFds[1] = {
-			{
-				.fd = ctx->osEvent,
-				.events = POLLIN|POLLPRI
-			}
-		};
-		poll(pollFds, 1, 1000);
-#if 0
-		printf("poll\n");
-      fprintf(stderr, "rSeq: %#" PRIx64 "\n", rSeq);
-      fprintf(stderr, "GPGet: %" PRIu32 "\n", userD->GPGet);
-      fprintf(stderr, "GPPut: %" PRIu32 "\n", userD->GPPut);
-#endif
+      struct pollfd pfd = { .fd = ctx->osEvent, .events = POLLIN | POLLPRI };
+      poll(&pfd, 1, 1000);
    }
 
-   ctx->gpGet = ctx->gpPut;
-   nv_push_init(&ctx->push, ctx->cmdBuf->map, 0x10000 / 4, BITFIELD_BIT(SUBC_NV9097));
+   ctx_begin_slot(ctx);
 
-   return VK_SUCCESS;
+   return result;
 }
 
 static VkResult
@@ -320,6 +405,15 @@ nvkmd_nvrm_exec_ctx_signal(struct nvkmd_ctx *_ctx,
 {
    struct nvkmd_nvrm_exec_ctx *ctx = nvkmd_nvrm_exec_ctx(_ctx);
 
+   /* Emit an in-channel semaphore release per signal, after the exec work.
+    * These stay in ctx->push and are sealed into a GP entry by flush()
+    * (alongside the channel fence). */
+   for (uint32_t i = 0; i < signal_count; i++) {
+      uint64_t addr = nvkmd_nvrm_sync_gpu_addr(signals[i].sync);
+      uint64_t value = nvkmd_nvrm_sync_gpu_signal_value(signals[i].sync, signals[i].signal_value);
+      write_semaphore_release(&ctx->push, addr, value, true);
+   }
+
    return nvkmd_nvrm_exec_ctx_flush(&ctx->base, log_obj);
 }
 
@@ -329,7 +423,19 @@ nvkmd_nvrm_exec_ctx_sync(struct nvkmd_ctx *_ctx,
 {
    struct nvkmd_nvrm_exec_ctx *ctx = nvkmd_nvrm_exec_ctx(_ctx);
 
-   return nvkmd_nvrm_exec_ctx_flush(&ctx->base, log_obj);
+   VkResult result = nvkmd_nvrm_exec_ctx_flush(&ctx->base, log_obj);
+   if (result != VK_SUCCESS)
+      return result;
+
+   /* The explicit idle point: block until everything submitted has retired. */
+   while (ctx_completed(ctx) < ctx->wSeq) {
+      if (ctx_check_error(ctx))
+         return vk_error(log_obj, VK_ERROR_DEVICE_LOST);
+      struct pollfd pfd = { .fd = ctx->osEvent, .events = POLLIN | POLLPRI };
+      poll(&pfd, 1, 1000);
+   }
+
+   return VK_SUCCESS;
 }
 
 const struct nvkmd_ctx_ops nvkmd_nvrm_exec_ctx_ops = {
@@ -409,7 +515,14 @@ nvkmd_nvrm_bind_ctx_signal(struct nvkmd_ctx *_ctx,
 {
    struct nvkmd_nvrm_bind_ctx *ctx = nvkmd_nvrm_bind_ctx(_ctx);
 
-   return nvkmd_nvrm_bind_ctx_flush(&ctx->base, log_obj);
+   VkResult result = nvkmd_nvrm_bind_ctx_flush(&ctx->base, log_obj);
+   if (result != VK_SUCCESS)
+      return result;
+
+   for (uint32_t i = 0; i < signal_count; i++)
+      nvkmd_nvrm_sync_cpu_signal(signals[i].sync, signals[i].signal_value);
+
+   return VK_SUCCESS;
 }
 
 const struct nvkmd_ctx_ops nvkmd_nvrm_bind_ctx_ops = {

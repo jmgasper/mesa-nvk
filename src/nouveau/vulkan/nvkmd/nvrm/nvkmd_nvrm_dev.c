@@ -30,6 +30,9 @@ nvkmd_nvrm_create_dev(struct nvkmd_pdev *_pdev,
 
    list_inithead(&dev->base.mems);
    simple_mtx_init(&dev->base.mems_mutex, mtx_plain);
+   simple_mtx_init(&dev->sync_mutex, mtx_plain);
+   util_dynarray_init(&dev->sync_pages, NULL);
+   util_dynarray_init(&dev->sync_events, NULL);
 
    dev->mappings = _mesa_hash_table_create(NULL, _mesa_hash_pointer, _mesa_key_pointer_equal);
    if (dev->mappings == NULL) {
@@ -47,6 +50,9 @@ nvkmd_nvrm_dev_destroy(struct nvkmd_dev *_dev)
 {
    struct nvkmd_nvrm_dev *dev = nvkmd_nvrm_dev(_dev);
    struct nvkmd_nvrm_pdev *pdev = nvkmd_nvrm_pdev(dev->base.pdev);
+
+   nvkmd_nvrm_sync_pool_finish(dev);
+   simple_mtx_destroy(&dev->sync_mutex);
 
    if (dev->mappings != NULL)
       _mesa_hash_table_destroy(dev->mappings, NULL);
