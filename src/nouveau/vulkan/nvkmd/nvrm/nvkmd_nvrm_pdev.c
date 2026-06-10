@@ -368,6 +368,7 @@ nvkmd_nvrm_create_pdev(struct vk_object_base *log_obj,
    	.has_dma_buf = true,
    	.has_get_vram_used = true,
    	.has_alloc_tiled = true,
+   	.has_userptr = true,
    };
 
    pdev->channelClass = nvkmd_nvrm_pdev_find_supported_class(pdev, ARRAY_SIZE(sChannelClasses), sChannelClasses);

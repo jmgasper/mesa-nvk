@@ -73,6 +73,11 @@ struct nvkmd_nvrm_mem {
    struct nvkmd_mem base;
    NvHandle hMemoryPhys;
    bool isSystemMem;
+
+   /* For VK_EXT_external_memory_host imports: the application-owned host
+    * pointer backing this memory. When non-NULL, map() returns it directly
+    * instead of asking RM for a CPU mapping. */
+   void *userptr;
 };
 
 NVKMD_DECL_SUBCLASS(mem, nvrm);
@@ -93,6 +98,12 @@ VkResult nvkmd_nvrm_alloc_tiled_mem(struct nvkmd_dev *dev,
 VkResult nvkmd_nvrm_import_dma_buf(struct nvkmd_dev *dev,
                                       struct vk_object_base *log_obj,
                                       int fd, struct nvkmd_mem **mem_out);
+
+VkResult nvkmd_nvrm_import_userptr(struct nvkmd_dev *dev,
+                                      struct vk_object_base *log_obj,
+                                      void *userptr, uint64_t size_B,
+                                      enum nvkmd_mem_flags flags,
+                                      struct nvkmd_mem **mem_out);
 
 struct nvkmd_nvrm_va {
    struct nvkmd_va base;

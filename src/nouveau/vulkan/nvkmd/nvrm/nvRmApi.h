@@ -31,6 +31,12 @@ typedef struct NvRmApiMapping {
 
 
 NvU32 nvRmApiAlloc(NvRmApi *api, NvU32 hParent, NvU32 *hObject, NvU32 hClass, void *pAllocParams);
+/* Wrap an existing page-aligned userland range [address, address+size) as an
+ * OS-descriptor memory object via the VID_HEAP_CONTROL ioctl. The kernel locks
+ * the backing user pages for the lifetime of the returned handle. `writable`
+ * controls GPU write access. On success *hObject receives the RM-generated
+ * memory handle. */
+NvU32 nvRmApiAllocOsDescriptor(NvRmApi *api, NvU32 hParent, NvU32 *hObject, void *address, NvU64 size, bool writable);
 NvU32 nvRmApiFree(NvRmApi *api, NvU32 hObject);
 NvU32 nvRmApiControl(NvRmApi *api, NvU32 hObject, NvU32 cmd, void *pParams, NvU32 paramsSize);
 NvU32 nvRmApiMapMemoryDma(NvRmApi *api, NvU32 hDevice, NvU32 hDma, NvU32 hMemory, NvU64 offset, NvU64 length, NvU32 flags, NvU64 *dmaOffset);

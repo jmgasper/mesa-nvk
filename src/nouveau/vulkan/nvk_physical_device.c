@@ -132,6 +132,7 @@ static void
 nvk_get_device_extensions(const struct nvk_instance *instance,
                           const struct nv_device_info *info,
                           bool has_tiled_bos,
+                          bool has_userptr,
                           struct vk_device_extension_table *ext)
 {
    *ext = (struct vk_device_extension_table) {
@@ -263,6 +264,7 @@ nvk_get_device_extensions(const struct nvk_instance *instance,
       .EXT_extended_dynamic_state2 = true,
       .EXT_extended_dynamic_state3 = true,
       .EXT_external_memory_dma_buf = true,
+      .EXT_external_memory_host = has_userptr,
       .EXT_global_priority = true,
       .EXT_global_priority_query = true,
       .EXT_graphics_pipeline_library = true,
@@ -1014,6 +1016,10 @@ nvk_get_device_properties(const struct nvk_instance *instance,
       .maxPerSetDescriptors = UINT32_MAX,
       .maxMemoryAllocationSize = (1u << 31),
 
+      /* VK_EXT_external_memory_host: the OS-descriptor import path requires a
+       * page-aligned host pointer. */
+      .minImportedHostPointerAlignment = os_page_size,
+
       /* Vulkan 1.2 properties */
       .supportedDepthResolveModes = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT |
                                     VK_RESOLVE_MODE_AVERAGE_BIT |
@@ -1553,6 +1559,7 @@ nvk_create_physical_device(struct nvkmd_pdev *nvkmd,
    struct vk_device_extension_table supported_extensions;
    nvk_get_device_extensions(instance, &nvkmd->dev_info,
                              nvkmd->kmd_info.has_alloc_tiled,
+                             nvkmd->kmd_info.has_userptr,
                              &supported_extensions);
 
    struct vk_features supported_features;

@@ -233,6 +233,51 @@ nvkmd_nvrm_import_dma_buf(struct nvkmd_dev *_dev,
                                  mem_out);
 }
 
+VkResult
+nvkmd_nvrm_import_userptr(struct nvkmd_dev *_dev,
+                             struct vk_object_base *log_obj,
+                             void *userptr, uint64_t size_B,
+                             enum nvkmd_mem_flags flags,
+                             struct nvkmd_mem **mem_out)
+{
+   struct nvkmd_nvrm_dev *dev = nvkmd_nvrm_dev(_dev);
+   struct nvkmd_nvrm_pdev *pdev = nvkmd_nvrm_pdev(dev->base.pdev);
+
+   struct NvRmApi rm;
+   nvkmd_nvrm_dev_api_ctl(pdev, &rm);
+
+   /* Host pointer imports are anonymous system memory, so they are always
+    * GART and host-visible regardless of the requested placement. The kernel
+    * locks exactly the pages spanning [userptr, userptr + size_B); size_B is
+    * already page-aligned by the caller, so we pass it through unchanged
+    * rather than inflating to bind_align_B (which would lock past the buffer).
+    */
+   flags &= ~(NVKMD_MEM_LOCAL | NVKMD_MEM_VRAM);
+   flags |= NVKMD_MEM_GART | NVKMD_MEM_CAN_MAP;
+
+   const uint32_t va_align_B = _dev->pdev->bind_align_B;
+
+   NvHandle hMemoryPhys = 0;
+   NV_STATUS nvRes = nvRmApiAllocOsDescriptor(&rm, pdev->hDevice, &hMemoryPhys,
+                                              userptr, size_B, /*writable=*/true);
+   if (nvRes != NV_OK) {
+      return vk_errorf(log_obj, VK_ERROR_INVALID_EXTERNAL_HANDLE,
+                       "ALLOC_OS_DESCRIPTOR failed: %#x", nvRes);
+   }
+
+   VkResult result =
+      create_mem_or_close_bo(dev, log_obj, flags, /*isSystemMem=*/true,
+                             hMemoryPhys, size_B,
+                             NVKMD_VA_GART, 0 /* pte_kind */, va_align_B,
+                             mem_out);
+   if (result != VK_SUCCESS)
+      return result;
+
+   nvkmd_nvrm_mem(*mem_out)->userptr = userptr;
+
+   return VK_SUCCESS;
+}
+
 static void
 nvkmd_nvrm_mem_free(struct nvkmd_mem *_mem)
 {
@@ -258,6 +303,14 @@ nvkmd_nvrm_mem_map(struct nvkmd_mem *_mem,
    struct nvkmd_nvrm_mem *mem = nvkmd_nvrm_mem(_mem);
    struct nvkmd_nvrm_dev *dev = nvkmd_nvrm_dev(_mem->dev);
    struct nvkmd_nvrm_pdev *pdev = nvkmd_nvrm_pdev(dev->base.pdev);
+
+   /* Host-pointer imports are already CPU-visible through the application's
+    * own pointer; hand it straight back rather than asking RM for a second
+    * mapping of the same physical pages. */
+   if (mem->userptr != NULL) {
+      *map_out = mem->userptr;
+      return VK_SUCCESS;
+   }
 
    struct NvRmApi rm;
    nvkmd_nvrm_dev_api_ctl(pdev, &rm);
@@ -291,6 +344,10 @@ nvkmd_nvrm_mem_unmap(struct nvkmd_mem *_mem,
    struct nvkmd_nvrm_mem *mem = nvkmd_nvrm_mem(_mem);
    struct nvkmd_nvrm_dev *dev = nvkmd_nvrm_dev(_mem->dev);
    struct nvkmd_nvrm_pdev *pdev = nvkmd_nvrm_pdev(dev->base.pdev);
+
+   /* Host-pointer imports never created an RM mapping (see _mem_map). */
+   if (mem->userptr != NULL)
+      return;
 
    struct NvRmApi rm;
    nvkmd_nvrm_dev_api_ctl(pdev, &rm);

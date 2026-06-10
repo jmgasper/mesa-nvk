@@ -121,6 +121,7 @@ struct nvkmd_info {
    bool has_map_fixed;
    bool has_overmap;
    bool has_compression;
+   bool has_userptr;
 };
 
 struct nvkmd_pdev_ops {
@@ -181,6 +182,12 @@ struct nvkmd_dev_ops {
    VkResult (*import_dma_buf)(struct nvkmd_dev *dev,
                               struct vk_object_base *log_obj,
                               int fd, struct nvkmd_mem **mem_out);
+
+   VkResult (*import_userptr)(struct nvkmd_dev *dev,
+                              struct vk_object_base *log_obj,
+                              void *userptr, uint64_t size_B,
+                              enum nvkmd_mem_flags flags,
+                              struct nvkmd_mem **mem_out);
 
    VkResult (*alloc_va)(struct nvkmd_dev *dev,
                         struct vk_object_base *log_obj,
@@ -469,6 +476,19 @@ struct nvkmd_mem *
 nvkmd_dev_lookup_mem_by_va(struct nvkmd_dev *dev,
                            uint64_t addr,
                            uint64_t *offset_out);
+
+/* Wrap an existing userland range as a GPU-accessible memory object. The
+ * caller retains ownership of the CPU memory; the returned nvkmd_mem keeps the
+ * pages locked until freed. Only valid when pdev->kmd_info.has_userptr. */
+static inline VkResult MUST_CHECK
+nvkmd_dev_import_userptr(struct nvkmd_dev *dev,
+                         struct vk_object_base *log_obj,
+                         void *userptr, uint64_t size_B,
+                         enum nvkmd_mem_flags flags,
+                         struct nvkmd_mem **mem_out)
+{
+   return dev->ops->import_userptr(dev, log_obj, userptr, size_B, flags, mem_out);
+}
 
 VkResult MUST_CHECK
 nvkmd_dev_alloc_va(struct nvkmd_dev *dev,
