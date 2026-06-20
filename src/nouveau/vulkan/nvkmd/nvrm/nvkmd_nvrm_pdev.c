@@ -221,6 +221,57 @@ nvkmd_nvrm_pdev_find_supported_class(struct nvkmd_nvrm_pdev *pdev, uint32_t numC
 #define NV_CHECK(nvRes) {NV_STATUS _nvRes = nvRes; if (_nvRes != NV_OK) {vkRes = vk_error(log_obj, VK_ERROR_UNKNOWN); goto error;}}
 
 
+/* Populate the per-SM shared-memory configuration table from info->sm. The DRM
+ * winsys does this in nouveau_device.c's init_shared_mem_sizes(), but that
+ * winsys isn't linked here, so this is a faithful port. NAK indexes
+ * sm_smem_sizes_kB[] when filling a compute QMD and reads max_smem_per_wg_kB;
+ * leaving the table empty makes it panic on the first dispatch. */
+static void
+nvkmd_nvrm_init_shared_mem_sizes(struct nv_device_info *info)
+{
+   if (info->sm >= 80) {
+      const uint16_t ampere_shared_mem[10] =
+         { 0, 8, 16, 32, 64, 100, 132, 164, 196, 228 };
+
+      if (info->sm >= 120) {
+         info->sm_smem_size_count = 6;
+      } else if (info->sm >= 90) {
+         info->sm_smem_size_count = 10;
+      } else if (info->sm == 80 || info->sm == 87) {
+         info->sm_smem_size_count = 8;
+      } else if (info->sm == 89 || info->sm == 86) {
+         info->sm_smem_size_count = 6;
+      } else {
+         UNREACHABLE("Unknown shared memory support for SM.");
+      }
+
+      assert(info->sm_smem_size_count <= ARRAY_SIZE(ampere_shared_mem));
+      typed_memcpy(info->sm_smem_sizes_kB, ampere_shared_mem,
+                   info->sm_smem_size_count);
+      STATIC_ASSERT(ARRAY_SIZE(ampere_shared_mem) <=
+                    ARRAY_SIZE(info->sm_smem_sizes_kB));
+   } else if (info->sm >= 75) {
+      /* Turing: 32 KB or 64 KB shared memory carveouts. */
+      info->sm_smem_sizes_kB[0] = 32;
+      info->sm_smem_sizes_kB[1] = 64;
+      info->sm_smem_size_count = 2;
+   } else if (info->sm >= 70) {
+      /* Volta: 0, 8, 16, 32, 64 or 96 KB. */
+      const uint16_t volta_shared_mem[6] = { 0, 8, 16, 32, 64, 96 };
+      info->sm_smem_size_count = ARRAY_SIZE(volta_shared_mem);
+      typed_memcpy(info->sm_smem_sizes_kB, volta_shared_mem,
+                   info->sm_smem_size_count);
+      STATIC_ASSERT(ARRAY_SIZE(volta_shared_mem) <=
+                    ARRAY_SIZE(info->sm_smem_sizes_kB));
+   } else {
+      UNREACHABLE("pre-Volta SM unsupported by this driver");
+   }
+
+   info->max_smem_per_wg_kB =
+      info->sm_smem_sizes_kB[info->sm_smem_size_count - 1];
+}
+
+
 static VkResult
 nvkmd_nvrm_create_pdev(struct vk_object_base *log_obj,
                        enum nvk_debug debug_flags,
@@ -358,6 +409,8 @@ nvkmd_nvrm_create_pdev(struct vk_object_base *log_obj,
     .bar_size_B  = bar1Size,
     .nc_atom_size_B = util_cache_granularity()
    };
+
+   nvkmd_nvrm_init_shared_mem_sizes(&pdev->base.dev_info);
 
    // TODO: bounds check
    strcpy(pdev->base.dev_info.device_name, getNameParams.gpuNameString.ascii);
