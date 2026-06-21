@@ -122,10 +122,21 @@ VkResult nvkmd_nvrm_import_userptr(struct nvkmd_dev *dev,
                                       enum nvkmd_mem_flags flags,
                                       struct nvkmd_mem **mem_out);
 
+/* A byte range [start, end) tracked in nvkmd_nvrm_va::bound. */
+struct nvkmd_nvrm_va_range {
+   uint64_t start;
+   uint64_t end;
+};
+
 struct nvkmd_nvrm_va {
    struct nvkmd_va base;
    NvHandle hMemoryPhys;
    NvHandle hMemoryVirt;
+   /* Sorted, non-overlapping byte ranges currently mapped into this VA by the
+    * sparse bind ctx (struct nvkmd_nvrm_va_range). NV_MEMORY_MAPPER's MAP
+    * rejects an already-mapped range and UNMAP rejects an unmapped one, so the
+    * bind ctx consults this to UNMAP exactly the live overlap before a MAP. */
+   struct util_dynarray bound;
 };
 
 NVKMD_DECL_SUBCLASS(va, nvrm);
@@ -136,8 +147,12 @@ VkResult nvkmd_nvrm_alloc_va(struct nvkmd_dev *dev,
                                 uint64_t size_B, uint64_t align_B,
                                 uint64_t fixed_addr, struct nvkmd_va **va_out);
 
-struct nvkmd_nvrm_exec_ctx {
-   struct nvkmd_ctx base;
+/* GPFIFO channel plumbing shared by the exec and bind contexts: a cmdBuf slot
+ * ring written through `push`, the GPFIFO and doorbell userD, a fence sem for
+ * non-blocking slot recycling, the RC-error notifier and an OS wake event.
+ * Built by nvrm_channel_init(); both contexts emit host SEM acquire/release +
+ * non-stall interrupt methods into it and submit via the same helpers. */
+struct nvkmd_nvrm_channel {
    struct nvkmd_mem *notifier;
    struct nvkmd_mem *userD;
    struct nvkmd_mem *gpFifo;
@@ -145,13 +160,6 @@ struct nvkmd_nvrm_exec_ctx {
    struct nvkmd_mem *sem;
    NvHandle hCtxDma;
    NvHandle hChannel;
-   struct {
-	   NvHandle hCopy;
-	   NvHandle hEng2d;
-	   NvHandle hEng3d;
-	   NvHandle hM2mf;
-	   NvHandle hCompute;
-   } subchannels;
    int osEvent;
    NvHandle hEvent;
    uint64_t wSeq;
@@ -170,10 +178,58 @@ struct nvkmd_nvrm_exec_ctx {
    uint64_t cmdBufSlotFence[NVRM_CTX_CMDBUF_SLOTS];
 };
 
+struct nvkmd_nvrm_exec_ctx {
+   struct nvkmd_ctx base;
+   struct nvkmd_nvrm_channel chan;
+   struct {
+	   NvHandle hCopy;
+	   NvHandle hEng2d;
+	   NvHandle hEng3d;
+	   NvHandle hM2mf;
+	   NvHandle hCompute;
+   } subchannels;
+};
+
 NVKMD_DECL_SUBCLASS(ctx, nvrm_exec);
+
+struct NvRmSemSurf;
+
+/* One queued semaphore acquire (wait) or release (signal) on the bind channel,
+ * captured at wait()/signal() time and emitted in flush(). */
+struct nvkmd_nvrm_bind_sem {
+   uint64_t addr;
+   uint64_t value;
+};
+
+/* One queued NV_MEMORY_MAPPER paging op, captured at bind() time. */
+struct nvkmd_nvrm_bind_op {
+   bool unmap;
+   NvHandle hVirtualMemory;
+   uint64_t virtualOffset;
+   NvHandle hPhysicalMemory;  /* 0 for unmap */
+   uint64_t physicalOffset;
+   uint64_t size;
+   uint32_t dmaFlags;         /* NVOS46 map flags (page kind, cache snoop); 0 for unmap */
+};
 
 struct nvkmd_nvrm_bind_ctx {
    struct nvkmd_ctx base;
+   struct nvkmd_nvrm_channel chan;
+
+   /* NV_MEMORY_MAPPER performs the MAP/UNMAP off-channel; the channel and the
+    * mapper rendezvous through two slots (GO, DONE) of this semaphore surface.
+    * This is the one place the nvrm backend uses a semsurf -- the sync path is
+    * event-object based. */
+   struct NvRmSemSurf *semSurf;
+   struct nvkmd_mem *notifyMem;   /* NV_MEMORY_MAPPER_NOTIFICATION */
+   NvHandle hMemMapper;
+   uint32_t mapperQueueSize;
+   uint64_t rendezvousSeq;        /* monotonic GO/DONE value, one per chunk */
+
+   /* Accumulated across wait()/bind()/signal() and emitted by flush(). */
+   struct util_dynarray waits;    /* struct nvkmd_nvrm_bind_sem */
+   struct util_dynarray signals;  /* struct nvkmd_nvrm_bind_sem */
+   struct util_dynarray ops;      /* struct nvkmd_nvrm_bind_op */
 };
 
 NVKMD_DECL_SUBCLASS(ctx, nvrm_bind);

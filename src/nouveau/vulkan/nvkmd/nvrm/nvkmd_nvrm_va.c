@@ -47,6 +47,7 @@ nvkmd_nvrm_alloc_va(struct nvkmd_dev *_dev,
    va->base.flags = flags;
    va->base.pte_kind = pte_kind;
    va->base.size_B = size_B;
+   util_dynarray_init(&va->bound, NULL);
 
 	NvHandle hMemoryVirt = 0;
 	NV_MEMORY_ALLOCATION_PARAMS params = {
@@ -138,6 +139,8 @@ nvkmd_nvrm_va_free(struct nvkmd_va *_va)
    nvkmd_nvrm_dev_api_ctl(pdev, &rm);
 
    nvRmApiFree(&rm, va->hMemoryVirt);
+
+   util_dynarray_fini(&va->bound);
 
    FREE(va);
 }
