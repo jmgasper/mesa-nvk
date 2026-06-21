@@ -55,7 +55,11 @@ nvkmd_nvrm_alloc_va(struct nvkmd_dev *_dev,
 		.type = NVOS32_TYPE_IMAGE,
 		.flags =
 			NVOS32_ALLOC_FLAGS_VIRTUAL |
-			((align_B != 0) ? NVOS32_ALLOC_FLAGS_ALIGNMENT_FORCE : 0),
+			((align_B != 0) ? NVOS32_ALLOC_FLAGS_ALIGNMENT_FORCE : 0) |
+			/* Sparse residency: unmapped pages must be non-faulting (read as
+			 * zero) rather than raising a GPU page fault, and UNMAP restores
+			 * that sparse PTE instead of a faulting hole. */
+			((flags & NVKMD_VA_SPARSE) ? NVOS32_ALLOC_FLAGS_SPARSE : 0),
 		.size = size_B,
 		.alignment = align_B,
 		.hVASpace = pdev->hVaSpace,
