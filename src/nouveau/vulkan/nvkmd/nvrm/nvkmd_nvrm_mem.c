@@ -221,7 +221,13 @@ nvkmd_nvrm_import_dma_buf(struct nvkmd_dev *_dev,
    const uint64_t size_B =
       (uint64_t)sizeInfo.data * NV0041_CTRL_SURFACE_INFO_PHYS_SIZE_SCALE_FACTOR;
 
-   enum nvkmd_mem_flags mem_flags = NVKMD_MEM_SHARED | NVKMD_MEM_CAN_MAP;
+   /* All maps on these discrete GPUs are coherent: imported memory is either
+    * CPU sysmem or write-back VRAM, matching the nouveau backend's assumption.
+    * Host-visible memory types are HOST_COHERENT, so without this the
+    * coherence assert in nvk_AllocateMemory would fire on re-import.
+    */
+   enum nvkmd_mem_flags mem_flags =
+      NVKMD_MEM_SHARED | NVKMD_MEM_CAN_MAP | NVKMD_MEM_COHERENT;
    mem_flags |= isSystemMem ? NVKMD_MEM_GART : NVKMD_MEM_LOCAL;
 
    const enum nvkmd_va_flags va_flags = isSystemMem ? NVKMD_VA_GART : 0;
