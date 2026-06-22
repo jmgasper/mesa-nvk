@@ -113,6 +113,15 @@ nvkmd_nvrm_alloc_tiled_mem(struct nvkmd_dev *_dev,
       flags |= NVKMD_MEM_GART;
    }
 
+   /* We assume that all discrete GPU maps are coherent: they're either cached
+    * PCI sysmem (GART) or write-back VRAM maps. This matches the nouveau
+    * backend and the import path in this file. NVK's SEPARATE query-pool
+    * layout (used on every non-SOC GPU) relies on this flag to skip the
+    * manual sync_{to,from}_gpu path; without it nvk_sync_queries_from_gpu and
+    * nvk_ResetQueryPool assert. Tegra/SOC parts are not supported here. */
+   if (_dev->pdev->dev_info.type != NV_DEVICE_TYPE_SOC)
+      flags |= NVKMD_MEM_COHERENT;
+
    const uint32_t mem_align_B = _dev->pdev->bind_align_B;
    size_B = align64(size_B, mem_align_B);
 
