@@ -1,17 +1,5 @@
 # Copyright © 2022 Collabora Ltd. and Red Hat Inc.
 # SPDX-License-Identifier: MIT
-nvrm_files = files(
-  'nvkmd/nvrm/nvkmd_nvrm.h',
-  'nvkmd/nvrm/nvkmd_nvrm_ctx.c',
-  'nvkmd/nvrm/nvkmd_nvrm_dev.c',
-  'nvkmd/nvrm/nvkmd_nvrm_mem.c',
-  'nvkmd/nvrm/nvkmd_nvrm_pdev.c',
-  'nvkmd/nvrm/nvkmd_nvrm_va.c',
-  'nvkmd/nvrm/nvkmd_nvrm_sync.c',
-  'nvkmd/nvrm/nvRmApi.c',
-  'nvkmd/nvrm/nvRmSemSurf.c',
-)
-
 nvk_files = files(
   'nvk_acceleration_structure.c',
   'nvk_buffer.c',
@@ -84,17 +72,9 @@ nvk_files = files(
   'nvk_wsi.h',
   'layers/nvk_app_workarounds.c',
   'layers/nvk_app_workarounds.h',
-# 'nvkmd/nouveau/nvkmd_nouveau.h',
-# 'nvkmd/nouveau/nvkmd_nouveau_ctx.c',
-# 'nvkmd/nouveau/nvkmd_nouveau_dev.c',
-# 'nvkmd/nouveau/nvkmd_nouveau_mem.c',
-# 'nvkmd/nouveau/nvkmd_nouveau_pdev.c',
-# 'nvkmd/nouveau/nvkmd_nouveau_va.c',
   'nvkmd/nvkmd.c',
   'nvkmd/nvkmd.h',
 )
-
-nvk_files += nvrm_files
 
 nvkcl_files = files(
   'cl/nvk_query.cl',
@@ -149,7 +129,6 @@ nvk_drirc = custom_target(
 )
 
 nvk_deps = [
-# dep_libdrm,
   dep_elf,
   idep_nak,
   idep_nil,
@@ -157,7 +136,6 @@ nvk_deps = [
   idep_mesautil,
   idep_nouveau_cubin,
   idep_nouveau_mme,
-# idep_nouveau_ws,
   idep_nvidia_headers,
   idep_vulkan_runtime,
   idep_vulkan_util,
@@ -171,6 +149,21 @@ nvk_build_id = get_option('nvk-build-id')
 if nvk_build_id != ''
   nvk_flags += '-DNVK_BUILD_ID_OVERRIDE="' + nvk_build_id + '"'
 endif
+
+# Select and build the kernel-mode (nvkmd) backend as an internal static
+# library. The backend meson.build files consume `nvk_deps` / `nvk_flags`
+# (defined above) and export `idep_nvkmd_<backend>`.
+if nvk_nvkmd_backend == 'nvrm'
+  nvk_flags += '-DNVKMD_BACKEND_NVRM'
+  subdir('nvkmd/nvrm')
+  idep_nvkmd = idep_nvkmd_nvrm
+else
+  nvk_flags += '-DNVKMD_BACKEND_NOUVEAU'
+  subdir('nvkmd/nouveau')
+  idep_nvkmd = idep_nvkmd_nouveau
+endif
+
+nvk_deps += idep_nvkmd
 
 if with_platform_android
   nvk_files += files('nvk_android.c')
@@ -190,15 +183,19 @@ libnvk = static_library(
     inc_include,
     inc_src,
     inc_nouveau_winsys,
-    'nvkmd/nvrm/open-gpu-kernel-modules/src/nvidia/arch/nvalloc/common/inc',
-    'nvkmd/nvrm/open-gpu-kernel-modules/src/nvidia/arch/nvalloc/unix/include',
-    'nvkmd/nvrm/open-gpu-kernel-modules/src/common/sdk/nvidia/inc',
-    'nvkmd/nvrm/open-gpu-kernel-modules/src/nvidia/inc/kernel',
   ],
   dependencies : nvk_deps,
   c_args : [no_override_init_args, nvk_flags],
   gnu_symbol_visibility : 'hidden',
 )
+
+# On Haiku the ICD library is installed next to its JSON manifest in the
+# Vulkan icd.d add-ons directory; elsewhere it goes to the default libdir.
+if host_machine.system() == 'haiku'
+  _vulkan_nouveau_install_dir = with_vulkan_icd_dir
+else
+  _vulkan_nouveau_install_dir = get_option('libdir')
+endif
 
 libvulkan_nouveau = shared_library(
   'vulkan_nouveau',
@@ -206,6 +203,7 @@ libvulkan_nouveau = shared_library(
   link_args: [ld_args_build_id, ld_args_bsymbolic, ld_args_gc_sections],
   gnu_symbol_visibility : 'hidden',
   install : true,
+  install_dir : _vulkan_nouveau_install_dir,
 )
 
 icd_file_name = libname_prefix + 'vulkan_nouveau.' + libname_suffix

@@ -3,9 +3,13 @@
 
 inc_nouveau_winsys=include_directories('winsys')
 
-#subdir('drm')
+if with_nvk_nouveau_backend
+  subdir('drm')      # defines inc_nouveau_drm
+endif
 subdir('headers')
-#subdir('winsys')
+if with_nvk_nouveau_backend
+  subdir('winsys')   # defines idep_nouveau_ws
+endif
 if with_nouveau_vk
   subdir('rust')
   subdir('nil')
