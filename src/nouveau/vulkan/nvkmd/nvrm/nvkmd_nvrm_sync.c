@@ -402,6 +402,13 @@ sync_wait_satisfied(const struct vk_sync_wait *waits, uint32_t wait_count,
 
    for (uint32_t i = 0; i < wait_count; i++) {
       struct nvkmd_nvrm_sync *sync = to_nvkmd_nvrm_sync(waits[i].sync);
+
+      /* The sync word is GPU-written into GART that is not mapped coherent, so
+       * invalidate the CPU cache for the page before reading. Without this the
+       * poll can spin forever on a stale cached value even though the GPU has
+       * advanced it. No-op for COHERENT memory. */
+      nvkmd_mem_sync_map_from_gpu(sync->mem, 0, sync->mem->size_B);
+
       struct nvrm_sync_data *d = sync_data(sync);
 
       /* The default resolves against the completed payload (value), advanced
