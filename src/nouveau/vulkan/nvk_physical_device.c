@@ -133,6 +133,7 @@ nvk_get_device_extensions(const struct nvk_instance *instance,
                           const struct nv_device_info *info,
                           bool has_tiled_bos,
                           bool has_userptr,
+                          bool has_map_fixed,
                           struct vk_device_extension_table *ext)
 {
    *ext = (struct vk_device_extension_table) {
@@ -281,7 +282,7 @@ nvk_get_device_extensions(const struct nvk_instance *instance,
       .EXT_line_rasterization = true,
       .EXT_load_store_op_none = true,
       .EXT_mesh_shader = info->cls_eng3d >= TURING_A,
-      .EXT_map_memory_placed = true,
+      .EXT_map_memory_placed = has_map_fixed,
       .EXT_memory_budget = true,
       .EXT_multi_draw = true,
       .EXT_mutable_descriptor_type = true,
@@ -718,9 +719,9 @@ nvk_get_device_features(const struct nv_device_info *info,
       .legacyVertexAttributes = true,
 
       /* VK_EXT_map_memory_placed */
-      .memoryMapPlaced = true,
+      .memoryMapPlaced = supported_extensions->EXT_map_memory_placed,
       .memoryMapRangePlaced = false,
-      .memoryUnmapReserve = true,
+      .memoryUnmapReserve = supported_extensions->EXT_map_memory_placed,
 
       /* VK_EXT_mesh_shader */
       .taskShader = info->cls_eng3d >= TURING_A,
@@ -1560,6 +1561,7 @@ nvk_create_physical_device(struct nvkmd_pdev *nvkmd,
    nvk_get_device_extensions(instance, &nvkmd->dev_info,
                              nvkmd->kmd_info.has_alloc_tiled,
                              nvkmd->kmd_info.has_userptr,
+                             nvkmd->kmd_info.has_map_fixed,
                              &supported_extensions);
 
    struct vk_features supported_features;
