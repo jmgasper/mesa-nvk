@@ -370,6 +370,10 @@ nvkmd_nvrm_mem_unmap(struct nvkmd_mem *_mem,
    }
    NvRmApiMapping *mapping = ent->data;
 
+   /* Drop the table entry before freeing its data so a later map() that reuses
+    * this address can't observe a dangling pointer. */
+   _mesa_hash_table_remove(dev->mappings, ent);
+
    NV_STATUS nvRes = nvRmApiUnmapMemory(&rm, pdev->hSubdevice, mem->hMemoryPhys, 0, mapping);
    if (nvRes != NV_OK) {
       fprintf(stderr, "[!] nvRes: %#x\n", nvRes);
