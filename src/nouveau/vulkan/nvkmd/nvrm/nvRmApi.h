@@ -47,3 +47,4 @@ NvU32 nvRmApiRegisterFd(NvRmApi *api, int ctlFd);
 NvU32 nvRmApiAllocOsEvent(NvRmApi *api, int fd);
 NvU32 nvRmApiFreeOsEvent(NvRmApi *api, int fd);
 NvU32 nvRmApiCardInfo(NvRmApi *api, nv_ioctl_card_info_t *ci, size_t size);
+NvU32 nvRmApiGetVersion(NvRmApi *api, char *versionOut, size_t versionSize);

@@ -294,3 +294,20 @@ NvU32 nvRmApiCardInfo(NvRmApi *api, nv_ioctl_card_info_t *ci, size_t size)
 	}
 	return NV_OK;
 }
+
+NvU32 nvRmApiGetVersion(NvRmApi *api, char *versionOut, size_t versionSize)
+{
+	nv_ioctl_rm_api_version_t p = {
+		.cmd = NV_RM_API_VERSION_CMD_QUERY,
+	};
+	int ret = nvRmIoctl(api->fd, NV_ESC_CHECK_VERSION_STR, &p, sizeof(p));
+	if (ret < 0) {
+		return NV_ERR_GENERIC;
+	}
+	if (p.reply != NV_RM_API_VERSION_REPLY_RECOGNIZED) {
+		return NV_ERR_NOT_SUPPORTED;
+	}
+	p.versionString[NV_RM_API_VERSION_STRING_LENGTH - 1] = '\0';
+	snprintf(versionOut, versionSize, "%s", p.versionString);
+	return NV_OK;
+}

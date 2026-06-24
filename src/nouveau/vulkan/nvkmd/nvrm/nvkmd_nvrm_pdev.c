@@ -487,6 +487,23 @@ nvkmd_nvrm_enum_pdev(struct vk_object_base *log_obj,
    	.fd = ctlFd,
    };
 
+#ifndef NVKMD_NVRM_VERSION
+#error "NVKMD_NVRM_VERSION must be defined (see meson option nvk-nvrm-version)"
+#endif
+   char driverVersion[NV_RM_API_VERSION_STRING_LENGTH];
+   NV_STATUS verRes = nvRmApiGetVersion(&rm, driverVersion, sizeof(driverVersion));
+   if (verRes != NV_OK) {
+      result = nvkmd_nvrm_error(log_obj, verRes, "nvRmApiGetVersion");
+      goto done;
+   }
+   if (strcmp(driverVersion, NVKMD_NVRM_VERSION) != 0) {
+      result = vk_errorf(log_obj, VK_ERROR_INCOMPATIBLE_DRIVER,
+                         "NVRM kernel driver version \"%s\" does not match the "
+                         "version this NVK build expects (\"%s\")",
+                         driverVersion, NVKMD_NVRM_VERSION);
+      goto done;
+   }
+
    nv_ioctl_card_info_t cardInfos[NV_MAX_GPUS];
    NV_STATUS nvRes = nvRmApiCardInfo(&rm, cardInfos, sizeof(cardInfos));
    if (nvRes != NV_OK) {
