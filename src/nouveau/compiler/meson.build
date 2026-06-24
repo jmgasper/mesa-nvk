@@ -40,6 +40,18 @@ libnak_deps = [
   idep_nil_h,
 ]
 
+# nak_bindings.h only pulls in the nouveau winsys headers (nouveau_bo.h, ...)
+# under #ifdef HAVE_LIBDRM, which is the nouveau nvkmd backend. idep_nouveau_ws
+# is only defined for that backend, so only add it there; the nvrm backend
+# (e.g. Haiku) builds without libdrm and must not reference it.
+_nak_bindings_deps = [
+  dep_libdrm,
+  libnak_deps,
+]
+if with_nvk_nouveau_backend
+  _nak_bindings_deps += idep_nouveau_ws
+endif
+
 _nak_bindings_rs = rust.bindgen(
   input : ['nak_bindings.h'],
   output : 'nak_bindings.rs',
@@ -65,11 +77,7 @@ _nak_bindings_rs = rust.bindgen(
     '--no-prepend-enum-name',
     '--with-derive-default',
   ],
-  dependencies : [
-    dep_libdrm,
-#   idep_nouveau_ws,
-    libnak_deps,
-  ],
+  dependencies : _nak_bindings_deps,
 )
 
 _libnak_bindings_rs = static_library(
