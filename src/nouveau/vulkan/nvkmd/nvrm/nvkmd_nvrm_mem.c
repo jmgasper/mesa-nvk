@@ -94,10 +94,6 @@ nvkmd_nvrm_alloc_tiled_mem(struct nvkmd_dev *_dev,
                               enum nvkmd_mem_flags flags,
                               struct nvkmd_mem **mem_out)
 {
-   if (pte_kind != 0 || tile_mode != 0) {
-      fprintf(stderr, "alloc_tiled_mem(%#" PRIx64 ", %#" PRIx64 ", %#" PRIx8 ", %#" PRIx16 ", %#x)\n",
-   	   size_B, align_B, pte_kind, tile_mode, flags);
-   }
    struct nvkmd_nvrm_dev *dev = nvkmd_nvrm_dev(_dev);
    struct nvkmd_nvrm_pdev *pdev = nvkmd_nvrm_pdev(dev->base.pdev);
 
