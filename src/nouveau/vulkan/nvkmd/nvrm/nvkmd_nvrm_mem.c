@@ -4,6 +4,7 @@
  */
 
 #include "nvkmd_nvrm.h"
+#include "nvkmd_nvrm_log.h"
 
 #include "vk_log.h"
 
@@ -151,8 +152,10 @@ nvkmd_nvrm_alloc_tiled_mem(struct nvkmd_dev *_dev,
 	NvHandle hMemoryPhys = 0;
    NV_STATUS nvRes = nvRmApiAlloc(&rm, pdev->hDevice, &hMemoryPhys, hClass, &params);
    if (nvRes != NV_OK) {
-      fprintf(stderr, "[!] nvRes: %#x\n", nvRes);
-      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+      return vk_errorf(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                       "nvRmApiAlloc(%s) failed: 0x%08x (%s)",
+                       isSystemMem ? "NV01_MEMORY_SYSTEM" : "NV01_MEMORY_LOCAL_USER",
+                       (unsigned)nvRes, nvkmd_nvrm_status_str(nvRes));
    }
 
    return create_mem_or_close_bo(dev, log_obj, flags, isSystemMem,
@@ -332,9 +335,10 @@ nvkmd_nvrm_mem_map(struct nvkmd_mem *_mem,
 
    NV_STATUS nvRes = nvRmApiMapMemory(&rm, pdev->hSubdevice, mem->hMemoryPhys, 0, mem->base.size_B, mem->isSystemMem, 0, mapping);
    if (nvRes != NV_OK) {
-      fprintf(stderr, "[!] nvRes: %#x\n", nvRes);
       free(mapping);
-      return vk_error(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      return vk_errorf(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                       "nvRmApiMapMemory failed: 0x%08x (%s)",
+                       (unsigned)nvRes, nvkmd_nvrm_status_str(nvRes));
    }
 
    if (_mesa_hash_table_insert(dev->mappings, mapping->address, mapping) == NULL) {
@@ -363,21 +367,21 @@ nvkmd_nvrm_mem_unmap(struct nvkmd_mem *_mem,
    struct NvRmApi rm;
    nvkmd_nvrm_dev_api_ctl(pdev, &rm);
 
+   /* Every address handed out by map() is recorded in dev->mappings, so a miss
+    * is an internal invariant violation rather than a runtime error. */
    struct hash_entry *ent = _mesa_hash_table_search(dev->mappings, map);
-   if (ent == NULL) {
-      fprintf(stderr, "[!] ent == NULL\n");
+   assert(ent != NULL);
+   if (ent == NULL)
       return;
-   }
    NvRmApiMapping *mapping = ent->data;
 
    /* Drop the table entry before freeing its data so a later map() that reuses
     * this address can't observe a dangling pointer. */
    _mesa_hash_table_remove(dev->mappings, ent);
 
-   NV_STATUS nvRes = nvRmApiUnmapMemory(&rm, pdev->hSubdevice, mem->hMemoryPhys, 0, mapping);
-   if (nvRes != NV_OK) {
-      fprintf(stderr, "[!] nvRes: %#x\n", nvRes);
-   }
+   /* Best-effort like nouveau's munmap: this is a void teardown op with no
+    * caller to propagate a failure to. */
+   nvRmApiUnmapMemory(&rm, pdev->hSubdevice, mem->hMemoryPhys, 0, mapping);
 
    free(mapping);
 }
@@ -390,9 +394,8 @@ nvkmd_nvrm_mem_overmap(struct nvkmd_mem *_mem,
 {
    struct nvkmd_nvrm_mem *mem = nvkmd_nvrm_mem(_mem);
 
-   fprintf(stderr, "nvkmd_nvrm_mem_overmap(%#x)\n", mem->hMemoryPhys);
-
-   return VK_ERROR_UNKNOWN;
+   return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
+                    "overmap unsupported (hMemoryPhys=%#x)", mem->hMemoryPhys);
 }
 
 static VkResult

@@ -4,6 +4,7 @@
  */
 
 #include "nvkmd_nvrm.h"
+#include "nvkmd_nvrm_log.h"
 
 #include <stdlib.h>
 
@@ -13,6 +14,7 @@
 #include "vk_log.h"
 
 #include <string.h>
+#include <errno.h>
 
 #include "class/cl0080.h" // NV01_DEVICE_0
 #include "class/cl2080.h" // NV20_SUBDEVICE_0
@@ -218,7 +220,9 @@ nvkmd_nvrm_pdev_find_supported_class(struct nvkmd_nvrm_pdev *pdev, uint32_t numC
 }
 
 
-#define NV_CHECK(nvRes) {NV_STATUS _nvRes = nvRes; if (_nvRes != NV_OK) {vkRes = vk_error(log_obj, VK_ERROR_UNKNOWN); goto error;}}
+/* Logs the failing call verbatim with its NV_STATUS, maps it to a VkResult and
+ * unwinds to `error:`. See nvkmd_nvrm_log.h. */
+#define NV_CHECK(call) NVRM_CHECK(call)
 
 
 /* Populate the per-SM shared-memory configuration table from info->sm. The DRM
@@ -298,7 +302,17 @@ nvkmd_nvrm_create_pdev(struct vk_object_base *log_obj,
    }
 
    pdev->ctlFd = open(NVRM_CTL_NODE_NAME, O_RDWR | O_CLOEXEC);
+   if (pdev->ctlFd < 0) {
+      vkRes = vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
+                        "open(%s) failed: %s", NVRM_CTL_NODE_NAME, strerror(errno));
+      goto error;
+   }
    pdev->devFd = open(pdev->devName, O_RDWR | O_CLOEXEC);
+   if (pdev->devFd < 0) {
+      vkRes = vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
+                        "open(%s) failed: %s", pdev->devName, strerror(errno));
+      goto error;
+   }
 
    struct NvRmApi rm;
    memset(&rm, 0, sizeof(rm));
@@ -368,7 +382,7 @@ nvkmd_nvrm_create_pdev(struct vk_object_base *log_obj,
 		if ((1U << gpcId) & gpcMaskParams.gpcMask) {
 			gpcCount++;
 			NV2080_CTRL_GR_GET_TPC_MASK_PARAMS tpcMaskParams = {.gpcId = gpcId};
-		   nvRmApiControl(&rm, pdev->hSubdevice, NV2080_CTRL_CMD_GR_GET_TPC_MASK, &tpcMaskParams, sizeof(tpcMaskParams));
+		   NV_CHECK(nvRmApiControl(&rm, pdev->hSubdevice, NV2080_CTRL_CMD_GR_GET_TPC_MASK, &tpcMaskParams, sizeof(tpcMaskParams)));
 			tpcCount += util_bitcount(tpcMaskParams.tpcMask);
 		}
 	}
@@ -476,8 +490,7 @@ nvkmd_nvrm_enum_pdev(struct vk_object_base *log_obj,
    nv_ioctl_card_info_t cardInfos[NV_MAX_GPUS];
    NV_STATUS nvRes = nvRmApiCardInfo(&rm, cardInfos, sizeof(cardInfos));
    if (nvRes != NV_OK) {
-      fprintf(stderr, "[!] nvRes: %#x\n", nvRes);
-      result = VK_ERROR_UNKNOWN;
+      result = nvkmd_nvrm_error(log_obj, nvRes, "nvRmApiCardInfo");
    	goto done;
    }
 
@@ -551,7 +564,9 @@ nvkmd_nvrm_pdev_get_vram_used(struct nvkmd_pdev *_pdev)
 			{.index = NV2080_CTRL_FB_INFO_INDEX_HEAP_FREE},
 		},
 	};
-   nvRmApiControl(&rm, pdev->hSubdevice, NV2080_CTRL_CMD_FB_GET_INFO_V2, &fbGetInfoParams, sizeof(fbGetInfoParams));
+   NV_STATUS nvRes = nvRmApiControl(&rm, pdev->hSubdevice, NV2080_CTRL_CMD_FB_GET_INFO_V2, &fbGetInfoParams, sizeof(fbGetInfoParams));
+   if (nvRes != NV_OK)
+      return 0;  /* query failed: report 0 used rather than garbage from uninit data */
 	uint64_t totalVramSize = fbGetInfoParams.fbInfoList[0].data * (uint64_t)1024;
 	uint64_t heapFree = fbGetInfoParams.fbInfoList[1].data * (uint64_t)1024;
 

@@ -4,9 +4,11 @@
  */
 
 #include "nvkmd_nvrm.h"
+#include "nvkmd_nvrm_log.h"
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <poll.h>
 #include <string.h>
 #include <inttypes.h>
@@ -37,7 +39,8 @@
 #define SUBC_NVC36F 0
 
 
-#define NV_CHECK(nvRes) {NV_STATUS _nvRes = nvRes; if (_nvRes != NV_OK) {vkRes = vk_error(log_obj, VK_ERROR_UNKNOWN); goto error;}}
+/* Logs the failing call verbatim with its NV_STATUS and unwinds to `error:`. */
+#define NV_CHECK(call) NVRM_CHECK(call)
 #define VK_CHECK(vkResIn) {VkResult _vkRes = vkResIn; if (_vkRes != VK_SUCCESS) {vkRes = vk_error(log_obj, _vkRes); goto error;}}
 
 #define NVRM_CTX_CMDBUF_BYTES   0x80000
@@ -281,7 +284,8 @@ nvrm_channel_init(struct nvkmd_nvrm_dev *dev,
 
    chan->osEvent = open(rm.nodeName, O_RDWR | O_CLOEXEC);
    if (chan->osEvent < 0) {
-      vkRes = vk_error(log_obj, VK_ERROR_UNKNOWN);
+      vkRes = vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
+                        "open(%s) failed: %s", rm.nodeName, strerror(errno));
       goto error;
    }
    struct NvRmApi rmOsEvent = rm;
@@ -576,15 +580,18 @@ nvkmd_nvrm_create_bind_ctx(struct nvkmd_dev *_dev,
     * match RM's view of each slot. */
    assert(pdev->semSurfLayout.caps &
           NV2080_CTRL_FB_GET_SEMAPHORE_SURFACE_LAYOUT_CAPS_64BIT_SEMAPHORES_SUPPORTED);
-   if (nvRmSemSurfCreate(dev, 0x1000, &ctx->semSurf) != NV_OK) {
-      vkRes = vk_error(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+   NV_STATUS nvRes = nvRmSemSurfCreate(dev, 0x1000, &ctx->semSurf);
+   if (nvRes != NV_OK) {
+      vkRes = vk_errorf(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                        "nvRmSemSurfCreate failed: 0x%08x (%s)",
+                        (unsigned)nvRes, nvkmd_nvrm_status_str(nvRes));
       goto error;
    }
 
    /* Bind the semsurf to the bind channel so RM rescans it on the channel's
     * non-stall interrupt and wakes the mapper's GO waiter. */
    NvU32 notify = NV2080_NOTIFIERS_FIFO_EVENT_MTHD;
-   nvRmSemSurfBindChannel(ctx->semSurf, ctx->chan.hChannel, 1, &notify);
+   NV_CHECK(nvRmSemSurfBindChannel(ctx->semSurf, ctx->chan.hChannel, 1, &notify));
 
    VK_CHECK(nvkmd_dev_alloc_mapped_mem(_dev, log_obj, 0x1000, 0x1000,
                                        NVKMD_MEM_GART, NVKMD_MEM_MAP_RDWR,
@@ -841,7 +848,9 @@ bind_submit_mapper_chunk(struct nvkmd_nvrm_bind_ctx *ctx,
    free(p);
 
    if (nvRes != NV_OK)
-      return vk_error(log_obj, VK_ERROR_DEVICE_LOST);
+      return vk_errorf(log_obj, VK_ERROR_DEVICE_LOST,
+                       "NV00FE_CTRL_CMD_SUBMIT_OPERATIONS failed: 0x%08x (%s)",
+                       (unsigned)nvRes, nvkmd_nvrm_status_str(nvRes));
 
    return VK_SUCCESS;
 }
