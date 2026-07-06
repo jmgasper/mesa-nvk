@@ -18,6 +18,7 @@
 #include "ctrl/ctrl0000/ctrl0000client.h" // NV0000_CTRL_CMD_CLIENT_GET_ADDR_SPACE_TYPE
 #include "ctrl/ctrl0041.h" // NV0041_CTRL_CMD_GET_SURFACE_INFO
 
+#include <fcntl.h>
 #include <unistd.h>
 
 

@@ -3,8 +3,13 @@
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
 #ifdef __HAIKU__
 #include <sys/ioccom.h>
+#else
+#include <sys/ioctl.h>
+#include <sys/mman.h>
 #endif
 
 #include "nv_escape.h"
@@ -22,7 +27,9 @@ static int nvRmIoctl(int fd, NvU32 cmd, void *pParams, NvU32 paramsSize)
 #ifdef __HAIKU__
 		res = ioctl(fd, cmd + NV_HAIKU_BASE, pParams, paramsSize);
 #else
-		res = ioctl(fd, _IOC(IOC_INOUT, NV_IOCTL_MAGIC, cmd, paramsSize), pParams);
+		/* Matches the NVIDIA Linux RM ABI: _IOWR(NV_IOCTL_MAGIC, cmd, <params>),
+		 * i.e. an in/out ioctl carrying paramsSize bytes. */
+		res = ioctl(fd, _IOC(_IOC_READ | _IOC_WRITE, NV_IOCTL_MAGIC, cmd, paramsSize), pParams);
 #endif
 		if (res < 0) {
 			res = errno;

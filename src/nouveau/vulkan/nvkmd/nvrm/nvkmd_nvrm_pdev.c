@@ -15,6 +15,8 @@
 
 #include <string.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "class/cl0080.h" // NV01_DEVICE_0
 #include "class/cl2080.h" // NV20_SUBDEVICE_0

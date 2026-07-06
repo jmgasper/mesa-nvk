@@ -9,10 +9,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <string.h>
 #include <inttypes.h>
 #include <assert.h>
+#include <unistd.h>
 
 #include "vk_log.h"
 

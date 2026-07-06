@@ -41,23 +41,25 @@ libnak_deps = [
 ]
 
 # nak_bindings.h only pulls in the nouveau winsys headers (nouveau_bo.h, ...)
-# under #ifdef HAVE_LIBDRM, which is the nouveau nvkmd backend. idep_nouveau_ws
-# is only defined for that backend, so only add it there; the nvrm backend
-# (e.g. Haiku) builds without libdrm and must not reference it.
+# under #ifdef NVK_NOUVEAU_WS, i.e. for the nouveau nvkmd backend. idep_nouveau_ws
+# (the include path for those headers) is likewise only defined for that backend,
+# so define the macro and add the dependency together and only there. The nvrm
+# backend (Haiku, or Linux against nvidia.ko) does not use the nouveau winsys and
+# must not reference either, even when libdrm happens to be present on the host.
 _nak_bindings_deps = [
   dep_libdrm,
   libnak_deps,
 ]
+_nak_bindings_c_args = [pre_args]
 if with_nvk_nouveau_backend
   _nak_bindings_deps += idep_nouveau_ws
+  _nak_bindings_c_args += '-DNVK_NOUVEAU_WS'
 endif
 
 _nak_bindings_rs = rust.bindgen(
   input : ['nak_bindings.h'],
   output : 'nak_bindings.rs',
-  c_args : [
-    pre_args,
-  ],
+  c_args : _nak_bindings_c_args,
   args : [
     bindgen_output_args,
     compiler_rs_bindgen_blocklist,
@@ -127,7 +129,11 @@ _libnak_rs = static_library(
 #
 # Also, don't build on Android because we do cross-builds and, unlike most
 # tests, these depend on libdrm and that confuses the build system.
-if with_tests and get_option('b_sanitize') == 'none' and not with_platform_android
+#
+# The nak tests pull in hw_runner/hw_tests, which use the nouveau winsys
+# bindings (nouveau_ws_*, DRM_RS_IOCTL_*). Those are only generated for the
+# nouveau backend, so the test crate can only be built there.
+if with_tests and get_option('b_sanitize') == 'none' and not with_platform_android and with_nvk_nouveau_backend
   rust.test(
     'nak',
     _libnak_rs,

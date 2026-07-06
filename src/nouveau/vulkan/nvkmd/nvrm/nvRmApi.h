@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+
 #include "nv.h"
 #include "nvos.h"
 #include "nv-ioctl.h"
@@ -10,7 +12,13 @@
 
 
 #define NVRM_CTL_NODE_NAME "/dev/nvidiactl"
+#ifdef __HAIKU__
 #define NVRM_ACTUAL_NODE_NAME "/dev/graphics/nvidia%u"
+#else
+/* The NVIDIA Linux kernel module (nvidia.ko) exposes per-GPU nodes as
+ * /dev/nvidia<minor>. */
+#define NVRM_ACTUAL_NODE_NAME "/dev/nvidia%u"
+#endif
 
 
 typedef struct NvRmApi {
