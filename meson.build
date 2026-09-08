@@ -693,6 +693,12 @@ with_glvnd = dep_glvnd.found()
 pre_args += '-DUSE_LIBGLVND=@0@'.format(with_glvnd.to_int())
 glvnd_vendor_name = get_option('glvnd-vendor-name')
 
+if host_machine.system() == 'haiku'
+  with_egl_vendor_dir = 'add-ons/opengl/egl_vendor.d'
+else
+  with_egl_vendor_dir = join_paths(get_option('datadir'), 'glvnd', 'egl_vendor.d')
+endif
+
 if with_vulkan_icd_dir == ''
   with_vulkan_icd_dir = join_paths(get_option('datadir'), 'vulkan/icd.d')
 endif

@@ -179,6 +179,18 @@ else
   files_egl += files('main/eglglvnd.c', 'main/egldispatchstubs.c')
 endif
 
+egl_install_dir = get_option('libdir')
+if with_glvnd and host_machine.system() == 'haiku'
+  egl_install_dir = with_egl_vendor_dir
+  egl_lib_version = ''
+  egl_lib_soversion = ''
+endif
+
+egl_version_kwargs = {}
+if egl_lib_version != ''
+  egl_version_kwargs += {'version' : egl_lib_version}
+endif
+
 if with_ld_version_script
   if with_glvnd
     link_args_for_egl += [
@@ -218,20 +230,27 @@ libegl = shared_library(
   link_depends : [link_deps_for_egl],
   dependencies : [deps_for_egl, dep_dl, dep_libdrm, dep_clock, dep_thread, idep_mesautil],
   install : true,
-  version : egl_lib_version,
+  install_dir : egl_install_dir,
   soversion : egl_lib_soversion,
   name_prefix : host_machine.system() == 'windows' ? 'lib' : [],  # always use lib, but avoid warnings on !windows
-  vs_module_defs : egl_def
+  vs_module_defs : egl_def,
+  kwargs : egl_version_kwargs,
 )
 
 if with_glvnd
+  if host_machine.system() == 'haiku'
+    egl_vendor_library_path = './libEGL_@0@.so'.format(glvnd_vendor_name)
+  else
+    egl_vendor_library_path = 'libEGL_@0@.so.0'.format(glvnd_vendor_name)
+  endif
+
   configure_file(
-    configuration: {'library_path' : 'libEGL_@0@.so.0'.format(glvnd_vendor_name)},
+    configuration: {'library_path' : egl_vendor_library_path},
     input : 'main/50_mesa.json',
     output: '50_@0@.json'.format(glvnd_vendor_name),
     install : true,
     install_tag : 'runtime',
-    install_dir : join_paths(get_option('datadir'), 'glvnd', 'egl_vendor.d')
+    install_dir : with_egl_vendor_dir,
   )
 
   devenv_glvnd_egl_json_file = configure_file(
