@@ -5,6 +5,8 @@
 #include "nvk_buffer.h"
 #include "nvk_entrypoints.h"
 #include "nvk_cmd_buffer.h"
+
+#include <inttypes.h>
 #include "nvk_device.h"
 #include "nvk_format.h"
 #include "nvk_image.h"
@@ -3555,6 +3557,15 @@ nvk_cmd_flush_gfx_cbufs(struct nvk_cmd_buffer *cmd)
 
          struct nvk_buffer_address ba;
          if (nvk_cmd_buffer_get_cbuf_addr(cmd, desc, shader, cbuf, &ba)) {
+            /* A constant buffer that is not aligned enough makes the
+             * graphics engine raise a class error, and the channel is dead
+             * from then on, so it is worth saying so even in release builds.
+             */
+            if (unlikely(ba.base_addr % min_cbuf_alignment != 0)) {
+               fprintf(stderr, "nvk: constant buffer %#" PRIx64 " is not %u "
+                  "byte aligned; the draw would kill the channel\n",
+                  ba.base_addr, min_cbuf_alignment);
+            }
             assert(ba.base_addr % min_cbuf_alignment == 0);
             ba.size = align(ba.size, min_cbuf_alignment);
             ba.size = MIN2(ba.size, NVK_MAX_CBUF_SIZE);

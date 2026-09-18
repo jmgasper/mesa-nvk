@@ -4,6 +4,8 @@
  */
 #include "nvk_cmd_buffer.h"
 
+#include <inttypes.h>
+
 #include "nvk_buffer.h"
 #include "nvk_cmd_pool.h"
 #include "nvk_descriptor_set_layout.h"
