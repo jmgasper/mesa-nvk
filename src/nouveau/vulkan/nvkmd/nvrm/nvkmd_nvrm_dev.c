@@ -77,6 +77,7 @@ const struct nvkmd_dev_ops nvkmd_nvrm_dev_ops = {
    .alloc_tiled_mem = nvkmd_nvrm_alloc_tiled_mem,
    .import_dma_buf = nvkmd_nvrm_import_dma_buf,
    .import_host_ptr = nvkmd_nvrm_import_host_ptr,
+   .import_scanout = nvkmd_nvrm_import_scanout,
    .alloc_va = nvkmd_nvrm_alloc_va,
    .create_ctx = nvkmd_nvrm_create_ctx,
 };

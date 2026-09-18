@@ -115,10 +115,20 @@ struct nvkmd_info {
    bool has_dma_buf;
    /** Memory the application owns can be made visible to the GPU */
    bool has_import_host_ptr;
+   /** The screen's frame buffer can be drawn into directly */
+   bool has_import_scanout;
    bool has_get_vram_used;
    bool has_alloc_tiled;
    bool has_map_fixed;
    bool has_overmap;
+};
+
+/* Where the screen's frame buffer is and what shape it has. */
+struct nvkmd_scanout_info {
+   uint32_t width;
+   uint32_t height;
+   uint32_t row_pitch_B;
+   uint64_t size_B;
 };
 
 struct nvkmd_pdev_ops {
@@ -187,6 +197,14 @@ struct nvkmd_dev_ops {
                                struct vk_object_base *log_obj,
                                void *ptr, uint64_t size_B,
                                struct nvkmd_mem **mem_out);
+
+   /* Take hold of the screen's frame buffer.  May be NULL, in which case a
+    * frame cannot be presented without going through the host.
+    */
+   VkResult (*import_scanout)(struct nvkmd_dev *dev,
+                              struct vk_object_base *log_obj,
+                              struct nvkmd_scanout_info *info_out,
+                              struct nvkmd_mem **mem_out);
 
    VkResult (*alloc_va)(struct nvkmd_dev *dev,
                         struct vk_object_base *log_obj,
@@ -497,6 +515,21 @@ nvkmd_dev_import_host_ptr(struct nvkmd_dev *dev,
                           struct nvkmd_mem **mem_out)
 {
    return dev->ops->import_host_ptr(dev, log_obj, ptr, size_B, mem_out);
+}
+
+static inline bool
+nvkmd_dev_can_import_scanout(struct nvkmd_dev *dev)
+{
+   return dev->ops->import_scanout != NULL;
+}
+
+static inline VkResult MUST_CHECK
+nvkmd_dev_import_scanout(struct nvkmd_dev *dev,
+                         struct vk_object_base *log_obj,
+                         struct nvkmd_scanout_info *info_out,
+                         struct nvkmd_mem **mem_out)
+{
+   return dev->ops->import_scanout(dev, log_obj, info_out, mem_out);
 }
 
 VkResult MUST_CHECK

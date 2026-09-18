@@ -32,6 +32,8 @@ typedef struct NvRmApiMapping {
 
 NvU32 nvRmApiAlloc(NvRmApi *api, NvU32 hParent, NvU32 *hObject, NvU32 hClass, void *pAllocParams);
 NvU32 nvRmApiFree(NvRmApi *api, NvU32 hObject);
+NvU32 nvRmApiDupObject(NvRmApi *api, NvU32 hParent, NvU32 hClientSrc,
+	NvU32 hObjectSrc, NvU32 *hObject);
 NvU32 nvRmApiAllocOsDescriptor(NvRmApi *api, NvU32 hParent, NvU32 hMemory,
 	void *ptr, NvU64 size);
 NvU32 nvRmApiControl(NvRmApi *api, NvU32 hObject, NvU32 cmd, void *pParams, NvU32 paramsSize);

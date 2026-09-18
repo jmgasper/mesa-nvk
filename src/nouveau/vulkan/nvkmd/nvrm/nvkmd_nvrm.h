@@ -97,6 +97,11 @@ VkResult nvkmd_nvrm_import_host_ptr(struct nvkmd_dev *dev,
                                     void *ptr, uint64_t size_B,
                                     struct nvkmd_mem **mem_out);
 
+VkResult nvkmd_nvrm_import_scanout(struct nvkmd_dev *dev,
+                                   struct vk_object_base *log_obj,
+                                   struct nvkmd_scanout_info *info_out,
+                                   struct nvkmd_mem **mem_out);
+
 VkResult nvkmd_nvrm_import_dma_buf(struct nvkmd_dev *dev,
                                       struct vk_object_base *log_obj,
                                       int fd, struct nvkmd_mem **mem_out);

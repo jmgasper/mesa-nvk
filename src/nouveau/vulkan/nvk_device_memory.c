@@ -4,6 +4,8 @@
  */
 #include "nvk_device_memory.h"
 
+#include "vk_haiku_scanout.h"
+
 #include "nvk_device.h"
 #include "nvk_entrypoints.h"
 #include "nvk_image.h"
@@ -166,6 +168,12 @@ nvk_AllocateMemory(VkDevice device,
       vk_find_struct_const(pAllocateInfo->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
    const VkImportMemoryHostPointerInfoEXT *host_ptr_info =
       vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_HOST_POINTER_INFO_EXT);
+   /* Our own structure, so vk_find_struct does not know its name. */
+   VkImportScanoutMemoryHAIKU *scanout_info = NULL;
+   vk_foreach_struct(s, (void *)pAllocateInfo->pNext) {
+      if (s->sType == VK_STRUCTURE_TYPE_IMPORT_SCANOUT_MEMORY_HAIKU)
+         scanout_info = (VkImportScanoutMemoryHAIKU *)s;
+   }
    const VkMemoryType *type =
       &pdev->mem_types[pAllocateInfo->memoryTypeIndex];
 
@@ -207,8 +215,25 @@ nvk_AllocateMemory(VkDevice device,
       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    const bool is_host_ptr_import = host_ptr_info && host_ptr_info->handleType;
-   const bool is_import = (fd_info && fd_info->handleType) || is_host_ptr_import;
-   if (is_host_ptr_import) {
+   const bool is_import = (fd_info && fd_info->handleType) ||
+                          is_host_ptr_import || scanout_info != NULL;
+   if (scanout_info != NULL) {
+      if (!nvkmd_dev_can_import_scanout(dev->nvkmd)) {
+         result = vk_error(dev, VK_ERROR_INITIALIZATION_FAILED);
+         goto fail_alloc;
+      }
+
+      struct nvkmd_scanout_info info;
+      result = nvkmd_dev_import_scanout(dev->nvkmd, &dev->vk.base, &info,
+                                        &mem->mem);
+      if (result != VK_SUCCESS)
+         goto fail_alloc;
+
+      scanout_info->width = info.width;
+      scanout_info->height = info.height;
+      scanout_info->rowPitch = info.row_pitch_B;
+      scanout_info->size = info.size_B;
+   } else if (is_host_ptr_import) {
       assert(host_ptr_info->handleType ==
                VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT ||
              host_ptr_info->handleType ==

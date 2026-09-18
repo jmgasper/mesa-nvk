@@ -14,6 +14,10 @@
 #include "util/u_memory.h"
 #include "util/hash_table.h"
 
+#include <sys/ioctl.h>
+
+#include "nv-haiku.h"
+
 #include "class/cl003e.h" // NV01_MEMORY_SYSTEM
 #include "class/cl0040.h" // NV01_MEMORY_LOCAL_USER
 
@@ -190,6 +194,45 @@ nvkmd_nvrm_import_host_ptr(struct nvkmd_dev *_dev,
    return create_mem_or_close_bo(dev, log_obj, NVKMD_MEM_GART, hMemory,
                                  aligned_size_B, NVKMD_VA_GART, 0,
                                  NVKMD_NVRM_HOST_PTR_ALIGNMENT, mem_out);
+}
+
+// Take hold of the screen's frame buffer, which the accelerant publishes
+// through the driver and shares with anyone who asks. It is a linear surface
+// in video memory, so a frame copied there never crosses the bus.
+VkResult
+nvkmd_nvrm_import_scanout(struct nvkmd_dev *_dev,
+                          struct vk_object_base *log_obj,
+                          struct nvkmd_scanout_info *info_out,
+                          struct nvkmd_mem **mem_out)
+{
+   struct nvkmd_nvrm_dev *dev = nvkmd_nvrm_dev(_dev);
+   struct nvkmd_nvrm_pdev *pdev = nvkmd_nvrm_pdev(dev->base.pdev);
+
+   struct NvRmApi rm;
+   nvkmd_nvrm_dev_api_ctl(pdev, &rm);
+
+   nv_haiku_scanout_info info;
+   if (ioctl(rm.fd, NV_HAIKU_BASE + NV_HAIKU_GET_SCANOUT, &info,
+             sizeof(info)) < 0)
+      return vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
+                       "no frame buffer has been published");
+
+   NvHandle hMemory = 0;
+   NV_STATUS nvRes = nvRmApiDupObject(&rm, pdev->hDevice, info.client,
+                                      info.memory, &hMemory);
+   if (nvRes != NV_OK)
+      return vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
+                       "resman refused to share the frame buffer: %#x", nvRes);
+
+   info_out->width = info.width;
+   info_out->height = info.height;
+   info_out->row_pitch_B = info.bytes_per_row;
+   info_out->size_B = info.size;
+
+   /* A pitch surface, so the default (pitch) page kind is right. */
+   return create_mem_or_close_bo(dev, log_obj, NVKMD_MEM_LOCAL, hMemory,
+                                 info.size, NVKMD_VA_GART, 0 /* pte_kind */,
+                                 0 /* va_align_B */, mem_out);
 }
 
 VkResult

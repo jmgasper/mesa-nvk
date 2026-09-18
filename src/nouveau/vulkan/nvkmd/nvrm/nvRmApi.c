@@ -70,6 +70,27 @@ NvU32 nvRmApiFree(NvRmApi *api, NvU32 hObject)
 	return p.status;
 }
 
+// Take a reference to an object belonging to another client, which its owner
+// has shared. The copy is ours: freeing it drops our reference only.
+NvU32 nvRmApiDupObject(NvRmApi *api, NvU32 hParent, NvU32 hClientSrc,
+	NvU32 hObjectSrc, NvU32 *hObject)
+{
+	NVOS55_PARAMETERS p = {
+		.hClient = api->hClient,
+		.hParent = hParent,
+		.hObject = 0,
+		.hClientSrc = hClientSrc,
+		.hObjectSrc = hObjectSrc,
+		.flags = 0
+	};
+	int ret = nvRmIoctl(api->fd, NV_ESC_RM_DUP_OBJECT, &p, sizeof(p));
+	if (ret < 0) {
+		return NV_ERR_GENERIC;
+	}
+	*hObject = p.hObject;
+	return p.status;
+}
+
 // Describe memory the caller already owns to resman, so the GPU can use it.
 // Resman pins the pages and keeps them until the object is freed.  This goes
 // to the control node, and resman fills in the page array itself.
