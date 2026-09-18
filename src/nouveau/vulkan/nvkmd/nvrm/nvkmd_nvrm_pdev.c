@@ -97,6 +97,7 @@
 #include "ctrl/ctrl0080/ctrl0080gpu.h" // NV0080_CTRL_CMD_GPU_GET_CLASSLIST_V2
 #include "ctrl/ctrl2080/ctrl2080gr.h" // NV2080_CTRL_CMD_GR_GET_GPC_MASK
 #include "ctrl/ctrl2080/ctrl2080mc.h" // NV2080_CTRL_CMD_MC_GET_ARCH_INFO
+#include "ctrl/ctrl2080/ctrl2080bus.h" // NV2080_CTRL_CMD_BUS_SET_PCIE_SPEED
 #include "ctrl/ctrl2080/ctrl2080gpu.h" // NV2080_CTRL_CMD_GPU_GET_NAME_STRING
 
 #define NV_MAX_GPUS 32
@@ -272,6 +273,23 @@ nvkmd_nvrm_create_pdev(struct vk_object_base *log_obj,
    NV_CHECK(nvRmApiAlloc(&rm, pdev->hDevice, &pdev->hSubdevice, NV20_SUBDEVICE_0, &ap2080));
    NV_CHECK(nvRmApiControl(&rm, pdev->hSubdevice, NV2080_CTRL_CMD_FB_GET_SEMAPHORE_SURFACE_LAYOUT, &pdev->semSurfLayout, sizeof(pdev->semSurfLayout)));
 
+
+   /* The bus comes up at its slowest speed and drops back to it whenever the
+    * GPU is idle; nothing on this system raises it again, so everything that
+    * crosses the bus - reading a rendered frame back, for instance - runs at
+    * a quarter of the speed the link can do. Ask for the fastest the link
+    * will take while we are using the GPU.
+    */
+   if (!debug_get_bool_option("NVK_NVRM_NO_PCIE_SPEED", false)) {
+      NV2080_CTRL_BUS_SET_PCIE_SPEED_PARAMS speedParams = {
+         .busSpeed = NV2080_CTRL_BUS_SET_PCIE_SPEED_8000MBPS,
+      };
+      NV_STATUS speedRes = nvRmApiControl(&rm, pdev->hSubdevice,
+         NV2080_CTRL_CMD_BUS_SET_PCIE_SPEED, &speedParams, sizeof(speedParams));
+      if (speedRes != NV_OK && debug_get_bool_option("NVK_NVRM_DEBUG", false)) {
+         fprintf(stderr, "nvrm: resman would not train the bus: %#x\n", speedRes);
+      }
+   }
 
    NV2080_CTRL_MC_GET_ARCH_INFO_PARAMS archInfoParams = {};
    NV_CHECK(nvRmApiControl(&rm, pdev->hSubdevice, NV2080_CTRL_CMD_MC_GET_ARCH_INFO, &archInfoParams, sizeof(archInfoParams)));
