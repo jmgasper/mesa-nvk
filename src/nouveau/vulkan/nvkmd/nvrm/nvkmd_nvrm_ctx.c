@@ -5,7 +5,12 @@
 
 #include "nvkmd_nvrm.h"
 
+#include "util/u_debug.h"
+
 #include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
 #include <poll.h>
 #include <inttypes.h>
 
@@ -13,6 +18,7 @@
 
 #include "util/u_memory.h"
 #include "nv_push_clc36f.h"
+#include "nv_push_cl906f.h"
 
 #include "class/cl0002.h" // NV01_CONTEXT_DMA
 #include "class/clc361.h" // NVC361_NOTIFY_CHANNEL_PENDING
@@ -22,12 +28,18 @@
 #include "class/cla16f.h" // KeplerBControlGPFifo
 #include "class/cl0005.h" // NV01_EVENT
 #include "ctrl/ctrla06f/ctrla06fgpfifo.h" // NVA06F_CTRL_CMD_BIND
-#include "ctrl/ctrlc36f.h" // NVC36F_CTRL_CMD_INTERNAL_GPFIFO_GET_WORK_SUBMIT_TOKEN
+#include "ctrl/ctrlc36f.h"
+#include "ctrl/ctrl906f.h"
+#include "ctrl/ctrl2080/ctrl2080rc.h" // NV906F_CTRL_CMD_GET_MMU_FAULT_INFO // NVC36F_CTRL_CMD_INTERNAL_GPFIFO_GET_WORK_SUBMIT_TOKEN
 
 #define SUBC_NVC36F 0
+#define SUBC_NV906F 0
 
 
-#define NV_CHECK(nvRes) {NV_STATUS _nvRes = nvRes; if (_nvRes != NV_OK) {vkRes = vk_error(log_obj, VK_ERROR_UNKNOWN); goto error;}}
+#define NV_CHECK(nvRes) {NV_STATUS _nvRes = nvRes; if (_nvRes != NV_OK) { \
+	if (getenv("NVK_NVRM_DEBUG") != NULL) \
+		fprintf(stderr, "nvrm ctx: %s:%d failed: %#x\n", __func__, __LINE__, _nvRes); \
+	vkRes = vk_error(log_obj, VK_ERROR_UNKNOWN); goto error;}}
 #define VK_CHECK(vkResIn) {VkResult _vkRes = vkResIn; if (_vkRes != VK_SUCCESS) {vkRes = vk_error(log_obj, _vkRes); goto error;}}
 
 
@@ -62,6 +74,32 @@ write_semaphore_release(struct nv_push *push, uint64_t adrGpu, uint64_t value, b
    });
    P_MTHD(push, NVC36F, NON_STALL_INTERRUPT);
    P_NVC36F_NON_STALL_INTERRUPT(push, 0);
+}
+
+/* Channels before Volta only have the GF100 semaphore methods. */
+static void
+write_semaphore_release_gf100(struct nv_push *push, uint64_t adrGpu, uint32_t value)
+{
+   P_MTHD(push, NV906F, SEMAPHOREA);
+   P_NV906F_SEMAPHOREA(push, (uint32_t)(adrGpu >> 32));
+   P_NV906F_SEMAPHOREB(push, (uint32_t)adrGpu >> 2);
+   P_NV906F_SEMAPHOREC(push, value);
+   const bool waitForIdle = !debug_get_bool_option("NVK_NVRM_NO_SEM_WFI", false);
+   if (waitForIdle) {
+      P_NV906F_SEMAPHORED(push, {
+         .operation = OPERATION_RELEASE,
+         .release_wfi = RELEASE_WFI_EN,
+         .release_size = RELEASE_SIZE_4BYTE,
+      });
+   } else {
+      P_NV906F_SEMAPHORED(push, {
+         .operation = OPERATION_RELEASE,
+         .release_wfi = RELEASE_WFI_DIS,
+         .release_size = RELEASE_SIZE_4BYTE,
+      });
+   }
+   P_MTHD(push, NV906F, NON_STALL_INTERRUPT);
+   P_NV906F_NON_STALL_INTERRUPT(push, 0);
 }
 
 static void
@@ -104,10 +142,12 @@ nvkmd_nvrm_create_exec_ctx(struct nvkmd_dev *_dev,
 
    VK_CHECK(nvkmd_dev_alloc_mapped_mem(_dev, log_obj,  0x1000,  0x1000, NVKMD_MEM_GART, NVKMD_MEM_MAP_RDWR,  &ctx->notifier));
    VK_CHECK(nvkmd_dev_alloc_mapped_mem(_dev, log_obj, 0x80000, 0x10000, NVKMD_MEM_LOCAL, NVKMD_MEM_MAP_RDWR, &ctx->userD));
-   VK_CHECK(nvkmd_dev_alloc_mapped_mem(_dev, log_obj, 0x40000,  0x1000, NVKMD_MEM_GART, NVKMD_MEM_MAP_RDWR,  &ctx->gpFifo));
-   VK_CHECK(nvkmd_dev_alloc_mapped_mem(_dev, log_obj, 0x10000,  0x1000, NVKMD_MEM_GART, NVKMD_MEM_MAP_RDWR,  &ctx->cmdBuf));
-   VK_CHECK(nvkmd_dev_alloc_mapped_mem(_dev, log_obj,  0x1000,  0x1000, NVKMD_MEM_GART, NVKMD_MEM_MAP_RDWR,  &ctx->sem));
+   enum nvkmd_mem_flags ctxMemFlags = getenv("NVK_NVRM_CTX_VRAM") != NULL ? NVKMD_MEM_LOCAL : NVKMD_MEM_GART;
+   VK_CHECK(nvkmd_dev_alloc_mapped_mem(_dev, log_obj, 0x40000,  0x1000, ctxMemFlags, NVKMD_MEM_MAP_RDWR,  &ctx->gpFifo));
+   VK_CHECK(nvkmd_dev_alloc_mapped_mem(_dev, log_obj, 0x10000,  0x1000, ctxMemFlags, NVKMD_MEM_MAP_RDWR,  &ctx->cmdBuf));
+   VK_CHECK(nvkmd_dev_alloc_mapped_mem(_dev, log_obj,  0x1000,  0x1000, ctxMemFlags, NVKMD_MEM_MAP_RDWR,  &ctx->sem));
 
+	memset(ctx->notifier->map, 0, ctx->notifier->size_B);
 	NV_CONTEXT_DMA_ALLOCATION_PARAMS ctxDmaParams = {
 		.flags =
 			DRF_DEF(OS03, _FLAGS, _MAPPING, _KERNEL) |
@@ -126,11 +166,29 @@ nvkmd_nvrm_create_exec_ctx(struct nvkmd_dev *_dev,
 		.gpFifoEntries = 0x8000,
 		.flags         = 0,
 		.hVASpace      = pdev->hVaSpace,
-		.hUserdMemory  = {nvkmd_nvrm_mem(ctx->userD)->hMemoryPhys},
+		.hUserdMemory  = {pdev->hUsermode != 0 ? nvkmd_nvrm_mem(ctx->userD)->hMemoryPhys : 0},
 		.userdOffset   = {0},
 		.engineType    = engineType,
 	};
    NV_CHECK(nvRmApiAlloc(&rm, pdev->hDevice, &ctx->hChannel, pdev->channelClass, &createChannelParams));
+
+	if (pdev->hUsermode == 0) {
+		NV_CHECK(nvRmApiMapMemory(&rm, pdev->hSubdevice, ctx->hChannel, 0, 0x1000, false,
+			DRF_DEF(OS33, _FLAGS, _FIFO_MAPPING, _ENABLE), &ctx->userdMap));
+		ctx->hasUserdMap = true;
+	}
+
+   /* Only allocate the engine objects the GPU provides. */
+   if (pdev->base.dev_info.cls_copy != 0)
+      NV_CHECK(nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hCopy, pdev->base.dev_info.cls_copy, NULL));
+   if (pdev->base.dev_info.cls_eng2d != 0)
+      NV_CHECK(nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hEng2d, pdev->base.dev_info.cls_eng2d, NULL));
+   NV_CHECK(nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hEng3d, pdev->base.dev_info.cls_eng3d, NULL));
+   if (pdev->base.dev_info.cls_m2mf != 0)
+      NV_CHECK(nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hM2mf, pdev->base.dev_info.cls_m2mf, NULL));
+   if (pdev->base.dev_info.cls_compute != 0)
+      NV_CHECK(nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hCompute, pdev->base.dev_info.cls_compute, NULL));
+
 
 	NVA06F_CTRL_BIND_PARAMS bindParams = {.engineType = engineType};
 	NV_CHECK(nvRmApiControl(&rm, ctx->hChannel, NVA06F_CTRL_CMD_BIND, &bindParams, sizeof(bindParams)));
@@ -138,29 +196,35 @@ nvkmd_nvrm_create_exec_ctx(struct nvkmd_dev *_dev,
 	NVA06F_CTRL_GPFIFO_SCHEDULE_PARAMS scheduleParams = {.bEnable = NV_TRUE};
 	NV_CHECK(nvRmApiControl(&rm, ctx->hChannel, NVA06F_CTRL_CMD_GPFIFO_SCHEDULE, &scheduleParams, sizeof(scheduleParams)));
 
-	NVC36F_CTRL_GPFIFO_SET_WORK_SUBMIT_TOKEN_NOTIF_INDEX_PARAMS notifParams = {
-		.index = NV_CHANNELGPFIFO_NOTIFICATION_TYPE_WORK_SUBMIT_TOKEN
-	};
-	NV_CHECK(nvRmApiControl(&rm,
-		ctx->hChannel,
-		NVC36F_CTRL_CMD_GPFIFO_SET_WORK_SUBMIT_TOKEN_NOTIF_INDEX,
-		&notifParams,
-		sizeof(notifParams)
-	));
+	if (pdev->hUsermode != 0) {
+		NVC36F_CTRL_GPFIFO_SET_WORK_SUBMIT_TOKEN_NOTIF_INDEX_PARAMS notifParams = {
+			.index = NV_CHANNELGPFIFO_NOTIFICATION_TYPE_WORK_SUBMIT_TOKEN
+		};
+		NV_CHECK(nvRmApiControl(&rm,
+			ctx->hChannel,
+			NVC36F_CTRL_CMD_GPFIFO_SET_WORK_SUBMIT_TOKEN_NOTIF_INDEX,
+			&notifParams,
+			sizeof(notifParams)
+		));
 
-	NVC36F_CTRL_CMD_GPFIFO_GET_WORK_SUBMIT_TOKEN_PARAMS tokenParams = {0};
-	NV_CHECK(nvRmApiControl(&rm,
-		ctx->hChannel,
-		NVC36F_CTRL_CMD_GPFIFO_GET_WORK_SUBMIT_TOKEN,
-		&tokenParams,
-		sizeof(tokenParams)
-	));
+		NVC36F_CTRL_CMD_GPFIFO_GET_WORK_SUBMIT_TOKEN_PARAMS tokenParams = {0};
+		NV_CHECK(nvRmApiControl(&rm,
+			ctx->hChannel,
+			NVC36F_CTRL_CMD_GPFIFO_GET_WORK_SUBMIT_TOKEN,
+			&tokenParams,
+			sizeof(tokenParams)
+		));
+	}
 
-   NV_CHECK(nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hCopy, pdev->base.dev_info.cls_copy, NULL));
-   NV_CHECK(nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hEng2d, pdev->base.dev_info.cls_eng2d, NULL));
-   NV_CHECK(nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hEng3d, pdev->base.dev_info.cls_eng3d, NULL));
-   NV_CHECK(nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hM2mf, pdev->base.dev_info.cls_m2mf, NULL));
-   NV_CHECK(nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hCompute, pdev->base.dev_info.cls_compute, NULL));
+   if (getenv("NVK_NVRM_DEBUG") != NULL) {
+      NvNotification *n = ctx->notifier->map;
+      fprintf(stderr, "nvrm ctx created: channel class %#x, error notifier %#x, "
+              "classes copy %#x 2d %#x 3d %#x m2mf %#x compute %#x\n",
+              pdev->channelClass, n[NV_CHANNELGPFIFO_NOTIFICATION_TYPE_ERROR].info32,
+              pdev->base.dev_info.cls_copy, pdev->base.dev_info.cls_eng2d,
+              pdev->base.dev_info.cls_eng3d, pdev->base.dev_info.cls_m2mf,
+              pdev->base.dev_info.cls_compute);
+   }
 
    ctx->osEvent = open(rm.nodeName, O_RDWR | O_CLOEXEC);
    if (ctx->osEvent < 0) {
@@ -212,6 +276,8 @@ nvkmd_nvrm_exec_ctx_destroy(struct nvkmd_ctx *_ctx)
    nvRmApiFree(&rm, ctx->subchannels.hEng3d);
    nvRmApiFree(&rm, ctx->subchannels.hM2mf);
    nvRmApiFree(&rm, ctx->subchannels.hCompute);
+   if (ctx->hasUserdMap)
+      nvRmApiUnmapMemory(&rm, pdev->hSubdevice, ctx->hChannel, 0, &ctx->userdMap);
    nvRmApiFree(&rm, ctx->hChannel);
    nvRmApiFree(&rm, ctx->hCtxDma);
    if (ctx->sem != NULL)
@@ -251,13 +317,18 @@ nvkmd_nvrm_exec_ctx_flush(struct nvkmd_ctx *_ctx,
 
    NvNotification *notifiers = ctx->notifier->map;
    NvNotification *submitTokenNotifier = &notifiers[NV_CHANNELGPFIFO_NOTIFICATION_TYPE_WORK_SUBMIT_TOKEN];
-   KeplerBControlGPFifo *userD = ctx->userD->map;
+   KeplerBControlGPFifo *userD = ctx->hasUserdMap
+      ? (KeplerBControlGPFifo *)ctx->userdMap.address : ctx->userD->map;
    uint64_t *semAdr = (uint64_t*)ctx->sem->map;
    uint64_t semAdrGpu = ctx->sem->va->addr;
 
    ctx->wSeq++;
 
-   write_semaphore_release(&ctx->push, semAdrGpu, ctx->wSeq, true);
+   bool hasDoorbell = pdev->hUsermode != 0;
+   if (hasDoorbell)
+      write_semaphore_release(&ctx->push, semAdrGpu, ctx->wSeq, true);
+   else
+      write_semaphore_release_gf100(&ctx->push, semAdrGpu, (uint32_t)ctx->wSeq);
 
    struct nvkmd_ctx_exec semExec = {
    	.addr = ctx->cmdBuf->va->addr,
@@ -268,12 +339,19 @@ nvkmd_nvrm_exec_ctx_flush(struct nvkmd_ctx *_ctx,
 
    userD->GPPut = ctx->gpPut;
 
-   volatile NvU32 *doorbell = (void*)((NvU8*)pdev->usermodeMap.address + NVC361_NOTIFY_CHANNEL_PENDING);
-   *doorbell = submitTokenNotifier->info32;
+   if (hasDoorbell) {
+      volatile NvU32 *doorbell = (void*)((NvU8*)pdev->usermodeMap.address + NVC361_NOTIFY_CHANNEL_PENDING);
+      *doorbell = submitTokenNotifier->info32;
+   }
 
    for (;;) {
-      uint64_t rSeq = *semAdr;
-      if (rSeq == ctx->wSeq) {
+      uint64_t rSeq = hasDoorbell ? *semAdr : *(uint32_t*)semAdr;
+      if (rSeq == (hasDoorbell ? ctx->wSeq : (uint32_t)ctx->wSeq)) {
+         break;
+      }
+      if (!hasDoorbell && userD->GPGet == ctx->gpPut && getenv("NVK_NVRM_FIFO_IDLE_WAIT") != NULL) {
+         /* TODO: replace with a GPU completion notification */
+         usleep(20000);
          break;
       }
 		struct pollfd pollFds[1] = {
@@ -282,13 +360,23 @@ nvkmd_nvrm_exec_ctx_flush(struct nvkmd_ctx *_ctx,
 				.events = POLLIN|POLLPRI
 			}
 		};
-		poll(pollFds, 1, 1000);
-#if 0
-		printf("poll\n");
-      fprintf(stderr, "rSeq: %#" PRIx64 "\n", rSeq);
-      fprintf(stderr, "GPGet: %" PRIu32 "\n", userD->GPGet);
-      fprintf(stderr, "GPPut: %" PRIu32 "\n", userD->GPPut);
-#endif
+		int pollRes = poll(pollFds, 1, 1000);
+		if (getenv("NVK_NVRM_DEBUG") != NULL) {
+			NV906F_CTRL_GET_MMU_FAULT_INFO_PARAMS faultInfo = {0};
+			NV_STATUS faultRes = nvRmApiControl(&rm, ctx->hChannel, NV906F_CTRL_CMD_GET_MMU_FAULT_INFO,
+				&faultInfo, sizeof(faultInfo));
+			NV906F_CTRL_CMD_GET_DEFER_RC_STATE_PARAMS deferRc = {0};
+			NV_STATUS deferRes = nvRmApiControl(&rm, ctx->hChannel, NV906F_CTRL_CMD_GET_DEFER_RC_STATE,
+				&deferRc, sizeof(deferRc));
+			fprintf(stderr, "nvrm channel: fault %#x addr %#x%08x type %#x '%s', deferRc %#x %d, "
+				"error notifier info32 %#x info16 %#x\n", faultRes, faultInfo.addrHi, faultInfo.addrLo,
+				faultInfo.faultType, faultInfo.faultString, deferRes, deferRc.bDeferRCPending,
+				notifiers[NV_CHANNELGPFIFO_NOTIFICATION_TYPE_ERROR].info32,
+				notifiers[NV_CHANNELGPFIFO_NOTIFICATION_TYPE_ERROR].info16);
+			fprintf(stderr, "nvrm flush channel %#x: poll %d, rSeq %#" PRIx64 ", wSeq %#" PRIx64
+				", GPGet %" PRIu32 ", GPPut %" PRIu32 ", put %" PRIu64 "\n", (unsigned)ctx->hChannel, pollRes, rSeq,
+				ctx->wSeq, userD->GPGet, userD->GPPut, (uint64_t)ctx->gpPut);
+		}
    }
 
    ctx->gpGet = ctx->gpPut;

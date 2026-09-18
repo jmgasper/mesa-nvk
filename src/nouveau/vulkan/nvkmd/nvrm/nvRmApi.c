@@ -172,7 +172,11 @@ NvU32 nvRmApiMapMemory(NvRmApi *api, NvU32 hDevice, NvU32 hMemory, NvU64 offset,
 		goto done1;
 	}
 	mapping->area = ret;
-	mapping->address = mapParams.address;
+	/* The driver maps whole pages, so a mapping that does not start on a page
+	 * boundary - a channel's USERD, for instance - has to be offset back to
+	 * where RM put it, which pLinearAddress tells us. */
+	mapping->address = (void*)((uintptr_t)mapParams.address
+		+ ((uintptr_t)p.params.pLinearAddress & (B_PAGE_SIZE - 1)));
 #else
 	mapping->address = (void*)mmap(0, length, PROT_READ|PROT_WRITE, MAP_SHARED, memFd, 0);
 	if (mapping->address == MAP_FAILED) {

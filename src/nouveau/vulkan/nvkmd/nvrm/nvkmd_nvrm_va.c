@@ -6,6 +6,7 @@
 #include "nvkmd_nvrm.h"
 
 #include "util/bitscan.h"
+#include "util/u_debug.h"
 #include "util/u_memory.h"
 #include "vk_log.h"
 
@@ -103,6 +104,10 @@ nvkmd_nvrm_alloc_va(struct nvkmd_dev *_dev,
 		case 0:
 		case 0x6:
 			break;
+		case 0xfe: /* NV_MMU_PTE_KIND_GENERIC_16BX2: block linear color before Turing */
+			params.type = NVOS32_TYPE_IMAGE;
+			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _BLOCK_LINEAR);
+			break;
 		default:
 			fprintf(stderr, "[!] unsupported pte_kind(%#x)\n", pte_kind);
 			return VK_ERROR_UNKNOWN;
@@ -170,6 +175,10 @@ nvkmd_nvrm_va_bind_mem(struct nvkmd_va *_va,
    if (nvRes != NV_OK) {
       fprintf(stderr, "[!] nvRes: %#x\n", nvRes);
       return VK_ERROR_UNKNOWN;
+   }
+   if (dmaOffset != va->base.addr + va_offset_B) {
+      fprintf(stderr, "[!] mapped at %#"PRIx64", expected %#"PRIx64"\n",
+         (uint64_t)dmaOffset, va->base.addr + va_offset_B);
    }
 
    va->hMemoryPhys = mem->hMemoryPhys;

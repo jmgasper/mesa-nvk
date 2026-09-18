@@ -112,6 +112,9 @@ struct nvkmd_nvrm_exec_ctx {
    struct nvkmd_ctx base;
    struct nvkmd_mem *notifier;
    struct nvkmd_mem *userD;
+   /* Before Volta the RM owns USERD; it is reached by mapping the channel. */
+   struct NvRmApiMapping userdMap;
+   bool hasUserdMap;
    struct nvkmd_mem *gpFifo;
    struct nvkmd_mem *cmdBuf;
    struct nvkmd_mem *sem;

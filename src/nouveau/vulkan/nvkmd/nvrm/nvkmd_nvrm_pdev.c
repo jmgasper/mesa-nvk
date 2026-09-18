@@ -370,8 +370,11 @@ nvkmd_nvrm_create_pdev(struct vk_object_base *log_obj,
    pdev->channelClass = nvkmd_nvrm_pdev_find_supported_class(pdev, ARRAY_SIZE(sChannelClasses), sChannelClasses);
    uint32_t usermodeClass = nvkmd_nvrm_pdev_find_supported_class(pdev, ARRAY_SIZE(sUsermodeClasses), sUsermodeClasses);
 
-   NV_CHECK(nvRmApiAlloc(&rm, pdev->hSubdevice, &pdev->hUsermode, usermodeClass, NULL));
-   NV_CHECK(nvRmApiMapMemory(&rm, pdev->hSubdevice, pdev->hUsermode, 0, 4096, false, 0, &pdev->usermodeMap));
+   /* GPUs before Volta have no doorbell; channels are kicked through USERD. */
+   if (usermodeClass != 0) {
+      NV_CHECK(nvRmApiAlloc(&rm, pdev->hSubdevice, &pdev->hUsermode, usermodeClass, NULL));
+      NV_CHECK(nvRmApiMapMemory(&rm, pdev->hSubdevice, pdev->hUsermode, 0, 4096, false, 0, &pdev->usermodeMap));
+   }
    NV_VASPACE_ALLOCATION_PARAMETERS vaSpaceParams = {
       .flags = NV_VASPACE_ALLOCATION_FLAGS_RETRY_PTE_ALLOC_IN_SYS,
    };
@@ -464,7 +467,8 @@ nvkmd_nvrm_pdev_destroy(struct nvkmd_pdev *_pdev)
 	   nvkmd_nvrm_dev_api_ctl(pdev, &rm);
 
 	   nvRmApiFree(&rm, pdev->hVaSpace);
-	   nvRmApiUnmapMemory(&rm, pdev->hSubdevice, pdev->hUsermode, 0, &pdev->usermodeMap);
+	   if (pdev->hUsermode != 0)
+	   	nvRmApiUnmapMemory(&rm, pdev->hSubdevice, pdev->hUsermode, 0, &pdev->usermodeMap);
 	   nvRmApiFree(&rm, pdev->hUsermode);
 	   nvRmApiFree(&rm, pdev->hSubdevice);
 	   nvRmApiFree(&rm, pdev->hDevice);
