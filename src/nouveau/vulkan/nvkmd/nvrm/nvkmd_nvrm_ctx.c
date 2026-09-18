@@ -249,6 +249,7 @@ nvkmd_nvrm_create_exec_ctx(struct nvkmd_dev *_dev,
 	};
    NV_CHECK(nvRmApiAlloc(&rm, pdev->hSubdevice, &ctx->hEvent, NV01_EVENT_OS_EVENT, &eventParams));
 
+
    nv_push_init(&ctx->push, ctx->cmdBuf->map, 0x10000 / 4, BITFIELD_BIT(SUBC_NV9097));
 
    *ctx_out = &ctx->base;
@@ -344,15 +345,20 @@ nvkmd_nvrm_exec_ctx_flush(struct nvkmd_ctx *_ctx,
       *doorbell = submitTokenNotifier->info32;
    }
 
-   for (;;) {
+   /* Most submissions finish in microseconds, so spin on the semaphore for a
+    * short while before blocking on the channel's event. */
+   const uint64_t target = hasDoorbell ? ctx->wSeq : (uint32_t)ctx->wSeq;
+   const int spinLimit = debug_get_num_option("NVK_NVRM_SPIN", 50000);
+   for (int round = 0;; round++) {
       uint64_t rSeq = hasDoorbell ? *semAdr : *(uint32_t*)semAdr;
-      if (rSeq == (hasDoorbell ? ctx->wSeq : (uint32_t)ctx->wSeq)) {
+      if (rSeq == target) {
          break;
       }
-      if (!hasDoorbell && userD->GPGet == ctx->gpPut && getenv("NVK_NVRM_FIFO_IDLE_WAIT") != NULL) {
-         /* TODO: replace with a GPU completion notification */
-         usleep(20000);
-         break;
+      if (round < spinLimit) {
+#if defined(__i386__) || defined(__x86_64__)
+         __builtin_ia32_pause();
+#endif
+         continue;
       }
 		struct pollfd pollFds[1] = {
 			{
@@ -360,8 +366,8 @@ nvkmd_nvrm_exec_ctx_flush(struct nvkmd_ctx *_ctx,
 				.events = POLLIN|POLLPRI
 			}
 		};
-		int pollRes = poll(pollFds, 1, 1000);
-		if (getenv("NVK_NVRM_DEBUG") != NULL) {
+		int pollRes = poll(pollFds, 1, 1);
+		if (getenv("NVK_NVRM_DEBUG") != NULL && (round - spinLimit) % 1000 == 0) {
 			NV906F_CTRL_GET_MMU_FAULT_INFO_PARAMS faultInfo = {0};
 			NV_STATUS faultRes = nvRmApiControl(&rm, ctx->hChannel, NV906F_CTRL_CMD_GET_MMU_FAULT_INFO,
 				&faultInfo, sizeof(faultInfo));
