@@ -59,6 +59,34 @@ nvk_memory_type_flags(const VkMemoryType *type,
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
+nvk_GetMemoryHostPointerPropertiesEXT(
+   VkDevice device,
+   VkExternalMemoryHandleTypeFlagBits handleType,
+   const void *pHostPointer,
+   VkMemoryHostPointerPropertiesEXT *pMemoryHostPointerProperties)
+{
+   VK_FROM_HANDLE(nvk_device, dev, device);
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+
+   switch (handleType) {
+   case VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT:
+   case VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_MAPPED_FOREIGN_MEMORY_BIT_EXT:
+      /* Imported host memory is system memory as far as the GPU is
+       * concerned, so every system memory type can back it.
+       */
+      pMemoryHostPointerProperties->memoryTypeBits = 0;
+      for (unsigned i = 0; i < pdev->mem_type_count; i++) {
+         if (!(pdev->mem_types[i].propertyFlags &
+               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+            pMemoryHostPointerProperties->memoryTypeBits |= BITFIELD_BIT(i);
+      }
+      return VK_SUCCESS;
+   default:
+      return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+   }
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
 nvk_GetMemoryFdPropertiesKHR(VkDevice device,
                              VkExternalMemoryHandleTypeFlagBits handleType,
                              int fd,
@@ -136,6 +164,8 @@ nvk_AllocateMemory(VkDevice device,
       vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
    const VkMemoryDedicatedAllocateInfo *dedicated_info =
       vk_find_struct_const(pAllocateInfo->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
+   const VkImportMemoryHostPointerInfoEXT *host_ptr_info =
+      vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_HOST_POINTER_INFO_EXT);
    const VkMemoryType *type =
       &pdev->mem_types[pAllocateInfo->memoryTypeIndex];
 
@@ -144,6 +174,8 @@ nvk_AllocateMemory(VkDevice device,
       handle_types |= export_info->handleTypes;
    if (fd_info != NULL)
       handle_types |= fd_info->handleType;
+   if (host_ptr_info != NULL)
+      handle_types |= host_ptr_info->handleType;
 
    const enum nvkmd_mem_flags flags = nvk_memory_type_flags(type, handle_types);
 
@@ -174,8 +206,20 @@ nvk_AllocateMemory(VkDevice device,
    if (!mem)
       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   const bool is_import = fd_info && fd_info->handleType;
-   if (is_import) {
+   const bool is_host_ptr_import = host_ptr_info && host_ptr_info->handleType;
+   const bool is_import = (fd_info && fd_info->handleType) || is_host_ptr_import;
+   if (is_host_ptr_import) {
+      assert(host_ptr_info->handleType ==
+               VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT ||
+             host_ptr_info->handleType ==
+               VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_MAPPED_FOREIGN_MEMORY_BIT_EXT);
+
+      result = nvkmd_dev_import_host_ptr(dev->nvkmd, &dev->vk.base,
+                                         host_ptr_info->pHostPointer,
+                                         aligned_size, &mem->mem);
+      if (result != VK_SUCCESS)
+         goto fail_alloc;
+   } else if (fd_info && fd_info->handleType) {
       assert(fd_info->handleType ==
                VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT ||
              fd_info->handleType ==

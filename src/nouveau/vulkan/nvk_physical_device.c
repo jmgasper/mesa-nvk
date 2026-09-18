@@ -123,6 +123,7 @@ static void
 nvk_get_device_extensions(const struct nvk_instance *instance,
                           const struct nv_device_info *info,
                           bool has_tiled_bos,
+                          bool has_import_host_ptr,
                           struct vk_device_extension_table *ext)
 {
    *ext = (struct vk_device_extension_table) {
@@ -305,6 +306,7 @@ nvk_get_device_extensions(const struct nvk_instance *instance,
       .EXT_tooling_info = true,
       /* Debug aid while bringing up pre-Turing GPUs: NVK_NO_XFB=1 hides
        * transform feedback, which OpenGL drivers use on every draw. */
+      .EXT_external_memory_host = has_import_host_ptr,
       .EXT_transform_feedback = !debug_get_bool_option("NVK_NO_XFB", false),
       .EXT_vertex_attribute_divisor = true,
       .EXT_vertex_input_dynamic_state = true,
@@ -848,6 +850,10 @@ nvk_get_device_properties(const struct nvk_instance *instance,
       .viewportSubPixelBits = 8,
       .minMemoryMapAlignment = os_page_size,
       .minTexelBufferOffsetAlignment = NVK_MIN_TEXEL_BUFFER_ALIGNMENT,
+
+      /* VK_EXT_external_memory_host */
+      .minImportedHostPointerAlignment = 4096,
+
       .minUniformBufferOffsetAlignment = nvk_min_cbuf_alignment(info),
       .minStorageBufferOffsetAlignment = NVK_MIN_SSBO_ALIGNMENT,
       .minTexelOffset = -8,
@@ -1393,6 +1399,7 @@ nvk_create_physical_device(struct nvkmd_pdev *nvkmd,
    struct vk_device_extension_table supported_extensions;
    nvk_get_device_extensions(instance, &nvkmd->dev_info,
                              nvkmd->kmd_info.has_alloc_tiled,
+                             nvkmd->kmd_info.has_import_host_ptr,
                              &supported_extensions);
 
    struct vk_features supported_features;

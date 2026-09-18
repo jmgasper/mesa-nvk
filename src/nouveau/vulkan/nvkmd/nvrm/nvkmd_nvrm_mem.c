@@ -5,6 +5,10 @@
 
 #include "nvkmd_nvrm.h"
 
+#include <inttypes.h>
+
+#include "util/u_atomic.h"
+
 #include "vk_log.h"
 
 #include "util/u_memory.h"
@@ -146,6 +150,46 @@ nvkmd_nvrm_alloc_tiled_mem(struct nvkmd_dev *_dev,
    return create_mem_or_close_bo(dev, log_obj, flags, hMemoryPhys, size_B,
                                  va_flags, pte_kind, va_align_B,
                                  mem_out);
+}
+
+// Wrap memory the application already owns in a resman memory object, so the
+// GPU can read and write it in place: what an application's window bitmap
+// needs if the GPU is to draw the frame straight into it.
+VkResult
+nvkmd_nvrm_import_host_ptr(struct nvkmd_dev *_dev,
+                           struct vk_object_base *log_obj,
+                           void *ptr, uint64_t size_B,
+                           struct nvkmd_mem **mem_out)
+{
+   struct nvkmd_nvrm_dev *dev = nvkmd_nvrm_dev(_dev);
+   struct nvkmd_nvrm_pdev *pdev = nvkmd_nvrm_pdev(dev->base.pdev);
+
+   struct NvRmApi rm;
+   nvkmd_nvrm_dev_api_ctl(pdev, &rm);
+
+   if (((uintptr_t)ptr & (NVKMD_NVRM_HOST_PTR_ALIGNMENT - 1)) != 0)
+      return vk_error(log_obj, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+
+   const uint64_t aligned_size_B = align64(size_B, NVKMD_NVRM_HOST_PTR_ALIGNMENT);
+
+   /* Resman needs a handle for the object; it does not make one up for an
+    * OS descriptor, so keep a counter of our own.
+    */
+   static uint32_t next_handle = 0;
+   const NvHandle hMemory = 0xdea70000 | (p_atomic_inc_return(&next_handle) & 0xffff);
+
+   NV_STATUS nvRes = nvRmApiAllocOsDescriptor(&rm, pdev->hDevice, hMemory,
+                                              ptr, aligned_size_B);
+   if (nvRes != NV_OK) {
+      fprintf(stderr, "nvrm: import of %p (%" PRIu64 " bytes) refused: %#x\n",
+              ptr, aligned_size_B, nvRes);
+      return vk_errorf(log_obj, VK_ERROR_INVALID_EXTERNAL_HANDLE,
+                       "resman refused to describe %p: %#x", ptr, nvRes);
+   }
+
+   return create_mem_or_close_bo(dev, log_obj, NVKMD_MEM_GART, hMemory,
+                                 aligned_size_B, NVKMD_VA_GART, 0,
+                                 NVKMD_NVRM_HOST_PTR_ALIGNMENT, mem_out);
 }
 
 VkResult

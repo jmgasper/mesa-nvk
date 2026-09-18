@@ -113,6 +113,8 @@ enum nvkmd_bind_op {
 
 struct nvkmd_info {
    bool has_dma_buf;
+   /** Memory the application owns can be made visible to the GPU */
+   bool has_import_host_ptr;
    bool has_get_vram_used;
    bool has_alloc_tiled;
    bool has_map_fixed;
@@ -177,6 +179,14 @@ struct nvkmd_dev_ops {
    VkResult (*import_dma_buf)(struct nvkmd_dev *dev,
                               struct vk_object_base *log_obj,
                               int fd, struct nvkmd_mem **mem_out);
+
+   /* Make memory the application already owns visible to the GPU.  May be
+    * NULL, in which case VK_EXT_external_memory_host is not supported.
+    */
+   VkResult (*import_host_ptr)(struct nvkmd_dev *dev,
+                               struct vk_object_base *log_obj,
+                               void *ptr, uint64_t size_B,
+                               struct nvkmd_mem **mem_out);
 
    VkResult (*alloc_va)(struct nvkmd_dev *dev,
                         struct vk_object_base *log_obj,
@@ -472,6 +482,21 @@ nvkmd_dev_import_dma_buf(struct nvkmd_dev *dev,
                          int fd, struct nvkmd_mem **mem_out)
 {
    return dev->ops->import_dma_buf(dev, log_obj, fd, mem_out);
+}
+
+static inline bool
+nvkmd_dev_can_import_host_ptr(struct nvkmd_dev *dev)
+{
+   return dev->ops->import_host_ptr != NULL;
+}
+
+static inline VkResult MUST_CHECK
+nvkmd_dev_import_host_ptr(struct nvkmd_dev *dev,
+                          struct vk_object_base *log_obj,
+                          void *ptr, uint64_t size_B,
+                          struct nvkmd_mem **mem_out)
+{
+   return dev->ops->import_host_ptr(dev, log_obj, ptr, size_B, mem_out);
 }
 
 VkResult MUST_CHECK

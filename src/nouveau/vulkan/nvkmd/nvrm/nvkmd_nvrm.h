@@ -90,6 +90,13 @@ VkResult nvkmd_nvrm_alloc_tiled_mem(struct nvkmd_dev *dev,
                                        enum nvkmd_mem_flags flags,
                                        struct nvkmd_mem **mem_out);
 
+#define NVKMD_NVRM_HOST_PTR_ALIGNMENT 4096
+
+VkResult nvkmd_nvrm_import_host_ptr(struct nvkmd_dev *dev,
+                                    struct vk_object_base *log_obj,
+                                    void *ptr, uint64_t size_B,
+                                    struct nvkmd_mem **mem_out);
+
 VkResult nvkmd_nvrm_import_dma_buf(struct nvkmd_dev *dev,
                                       struct vk_object_base *log_obj,
                                       int fd, struct nvkmd_mem **mem_out);

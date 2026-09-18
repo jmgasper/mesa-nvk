@@ -1,4 +1,9 @@
+#include <stdlib.h>
+
 #include "nvRmApi.h"
+
+#include "class/cl0071.h" // NV01_MEMORY_SYSTEM_OS_DESCRIPTOR
+#include "nv-unix-nvos-params-wrappers.h"
 
 #include <stdio.h>
 #include <errno.h>
@@ -59,6 +64,42 @@ NvU32 nvRmApiFree(NvRmApi *api, NvU32 hObject)
 		.hObjectOld = hObject
 	};
 	int ret = nvRmIoctl(api->fd, NV_ESC_RM_FREE, &p, sizeof(p));
+	if (ret < 0) {
+		return NV_ERR_GENERIC;
+	}
+	return p.status;
+}
+
+// Describe memory the caller already owns to resman, so the GPU can use it.
+// Resman pins the pages and keeps them until the object is freed.  This goes
+// to the control node, and resman fills in the page array itself.
+NvU32 nvRmApiAllocOsDescriptor(NvRmApi *api, NvU32 hParent, NvU32 hMemory,
+	void *ptr, NvU64 size)
+{
+	NVOS32_PARAMETERS p = {
+		.hRoot = api->hClient,
+		.hObjectParent = hParent,
+		.function = NVOS32_FUNCTION_ALLOC_OS_DESCRIPTOR,
+	};
+	p.data.AllocOsDesc.hMemory = hMemory;
+	p.data.AllocOsDesc.type = NVOS32_TYPE_IMAGE;
+	p.data.AllocOsDesc.flags =
+		NVOS32_ALLOC_FLAGS_MEMORY_HANDLE_PROVIDED |
+		NVOS32_ALLOC_FLAGS_MAP_NOT_REQUIRED;
+	p.data.AllocOsDesc.attr =
+		DRF_DEF(OS32, _ATTR, _PAGE_SIZE, _4KB) |
+		DRF_DEF(OS32, _ATTR, _LOCATION, _PCI) |
+		DRF_DEF(OS32, _ATTR, _COHERENCY, _CACHED) |
+		DRF_DEF(OS32, _ATTR, _FORMAT, _PITCH) |
+		DRF_DEF(OS32, _ATTR, _PHYSICALITY, _NONCONTIGUOUS);
+	p.data.AllocOsDesc.attr2 =
+		DRF_DEF(OS32, _ATTR2, _GPU_CACHEABLE, _NO) |
+		DRF_DEF(OS32, _ATTR2, _PROTECTION_USER, _READ_WRITE);
+	p.data.AllocOsDesc.descriptor = (NvP64)(NvUPtr)ptr;
+	p.data.AllocOsDesc.limit = size - 1;
+	p.data.AllocOsDesc.descriptorType = NVOS32_DESCRIPTOR_TYPE_VIRTUAL_ADDRESS;
+
+	int ret = nvRmIoctl(api->fd, NV_ESC_RM_VID_HEAP_CONTROL, &p, sizeof(p));
 	if (ret < 0) {
 		return NV_ERR_GENERIC;
 	}

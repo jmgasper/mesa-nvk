@@ -346,10 +346,14 @@ nvkmd_nvrm_exec_ctx_flush(struct nvkmd_ctx *_ctx,
       *doorbell = submitTokenNotifier->info32;
    }
 
-   /* Most submissions finish in microseconds, so spin on the semaphore for a
-    * short while before blocking on the channel's event. */
+   /* Wait for the semaphore.  Resman does not deliver the channel's event on
+    * this GPU, so the wait is a poll: spin first, because a submission often
+    * finishes in microseconds, then sleep in short steps.  Sleeping through
+    * poll() costs a whole millisecond per round even when asking for one, so
+    * it is only used once the work has clearly not finished quickly. */
    const uint64_t target = hasDoorbell ? ctx->wSeq : (uint32_t)ctx->wSeq;
-   const int spinLimit = debug_get_num_option("NVK_NVRM_SPIN", 50000);
+   const int spinLimit = debug_get_num_option("NVK_NVRM_SPIN", 200000);
+   const uint64_t sleep_us = debug_get_num_option("NVK_NVRM_SLEEP_US", 50);
    /* A channel that hit an error never signals its semaphore, so give up
     * rather than hanging the application for ever. */
    const uint64_t timeout_us =
@@ -366,13 +370,18 @@ nvkmd_nvrm_exec_ctx_flush(struct nvkmd_ctx *_ctx,
 #endif
          continue;
       }
-		struct pollfd pollFds[1] = {
-			{
-				.fd = ctx->osEvent,
-				.events = POLLIN|POLLPRI
-			}
-		};
-		int pollRes = poll(pollFds, 1, 1);
+		int pollRes = 0;
+		if (sleep_us != 0) {
+			os_time_sleep(sleep_us);
+		} else {
+			struct pollfd pollFds[1] = {
+				{
+					.fd = ctx->osEvent,
+					.events = POLLIN|POLLPRI
+				}
+			};
+			pollRes = poll(pollFds, 1, 1);
+		}
 		if (timeout_us != 0 && (uint64_t)(os_time_get() - waitStart) > timeout_us) {
 			fprintf(stderr, "nvrm: channel %#x did not finish within %" PRIu64
 				" ms: rSeq %#" PRIx64 ", wSeq %#" PRIx64 ", GPGet %" PRIu32
