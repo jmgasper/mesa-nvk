@@ -60,32 +60,96 @@ nvkmd_nvrm_alloc_va(struct nvkmd_dev *_dev,
 		.alignment = align_B,
 		.hVASpace = pdev->hVaSpace,
 	};
-	switch (pte_kind) {
-		case 0x1:
+	/* Resman derives the page kind of a virtual allocation from these
+	 * attributes, so they have to describe exactly the kind NIL picked for the
+	 * image.  The kind numbering changed with Turing, hence the two tables. */
+	const bool preTuring = pdev->base.dev_info.cls_eng3d < 0xc597 /* TURING_A */;
+	enum {
+		KIND_OTHER,	/* colour or untyped memory, the kind only says how it tiles */
+		KIND_Z16,
+		KIND_S8,
+		KIND_S8Z24,
+		KIND_Z24S8,
+		KIND_ZF32,
+		KIND_ZF32_X24S8,
+		KIND_PITCH,
+		KIND_UNKNOWN,
+	} kind = KIND_UNKNOWN;
+
+	if (preTuring) {
+		/* pascal/gp100/dev_mmu.h */
+		switch (pte_kind) {
+			case 0x00: kind = KIND_PITCH; break;
+			case 0x01: kind = KIND_Z16; break;
+			case 0x11: kind = KIND_S8Z24; break;
+			case 0x2a: kind = KIND_S8; break;
+			case 0x46: kind = KIND_Z24S8; break;
+			case 0x7b: kind = KIND_ZF32; break;
+			case 0xc3: kind = KIND_ZF32_X24S8; break;
+			case 0xfe: kind = KIND_OTHER; break; /* GENERIC_16BX2: block linear colour */
+		}
+	} else {
+		/* turing/tu102/dev_mmu.h */
+		switch (pte_kind) {
+			case 0x00: kind = KIND_PITCH; break;
+			case 0x01: kind = KIND_Z16; break;
+			case 0x02: kind = KIND_S8; break;
+			case 0x03: kind = KIND_S8Z24; break;
+			case 0x04: kind = KIND_ZF32_X24S8; break;
+			case 0x05: kind = KIND_Z24S8; break;
+			case 0x06: kind = KIND_OTHER; break; /* GENERIC_MEMORY */
+		}
+	}
+
+	switch (kind) {
+		case KIND_PITCH:
+		case KIND_OTHER:
+			if (kind == KIND_OTHER) {
+				params.type = NVOS32_TYPE_IMAGE;
+				params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _BLOCK_LINEAR);
+			}
+			break;
+		case KIND_Z16:
 			params.type = NVOS32_TYPE_DEPTH;
 			params.attr |= DRF_DEF(OS32, _ATTR, _DEPTH, _16);
-			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _PITCH);
+			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _BLOCK_LINEAR);
 			params.attr |= DRF_DEF(OS32, _ATTR, _Z_TYPE, _FIXED);
 			params.attr |= DRF_DEF(OS32, _ATTR, _ZS_PACKING, _Z16);
 			params.attr |= DRF_DEF(OS32, _ATTR, _COMPR, _NONE);
 			break;
-		case 0x2:
+		case KIND_S8:
 			params.type = NVOS32_TYPE_STENCIL;
 			params.attr |= DRF_DEF(OS32, _ATTR, _DEPTH, _8);
-			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _PITCH);
+			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _BLOCK_LINEAR);
 			params.attr |= DRF_DEF(OS32, _ATTR, _Z_TYPE, _FIXED);
 			params.attr |= DRF_DEF(OS32, _ATTR, _ZS_PACKING, _S8);
 			params.attr |= DRF_DEF(OS32, _ATTR, _COMPR, _NONE);
 			break;
-		case 0x3:
-			params.type = NVOS32_TYPE_STENCIL;
+		case KIND_S8Z24:
+			params.type = NVOS32_TYPE_DEPTH;
 			params.attr |= DRF_DEF(OS32, _ATTR, _DEPTH, _32);
 			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _BLOCK_LINEAR);
 			params.attr |= DRF_DEF(OS32, _ATTR, _Z_TYPE, _FIXED);
 			params.attr |= DRF_DEF(OS32, _ATTR, _ZS_PACKING, _S8Z24);
 			params.attr |= DRF_DEF(OS32, _ATTR, _COMPR, _NONE);
 			break;
-		case 0x4:
+		case KIND_Z24S8:
+			params.type = NVOS32_TYPE_DEPTH;
+			params.attr |= DRF_DEF(OS32, _ATTR, _DEPTH, _32);
+			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _BLOCK_LINEAR);
+			params.attr |= DRF_DEF(OS32, _ATTR, _Z_TYPE, _FIXED);
+			params.attr |= DRF_DEF(OS32, _ATTR, _ZS_PACKING, _Z24S8);
+			params.attr |= DRF_DEF(OS32, _ATTR, _COMPR, _NONE);
+			break;
+		case KIND_ZF32:
+			params.type = NVOS32_TYPE_DEPTH;
+			params.attr |= DRF_DEF(OS32, _ATTR, _DEPTH, _32);
+			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _BLOCK_LINEAR);
+			params.attr |= DRF_DEF(OS32, _ATTR, _Z_TYPE, _FLOAT);
+			params.attr |= DRF_DEF(OS32, _ATTR, _ZS_PACKING, _Z32);
+			params.attr |= DRF_DEF(OS32, _ATTR, _COMPR, _NONE);
+			break;
+		case KIND_ZF32_X24S8:
 			params.type = NVOS32_TYPE_DEPTH;
 			params.attr |= DRF_DEF(OS32, _ATTR, _DEPTH, _64);
 			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _BLOCK_LINEAR);
@@ -93,22 +157,7 @@ nvkmd_nvrm_alloc_va(struct nvkmd_dev *_dev,
 			params.attr |= DRF_DEF(OS32, _ATTR, _ZS_PACKING, _Z32_X24S8);
 			params.attr |= DRF_DEF(OS32, _ATTR, _COMPR, _NONE);
 			break;
-		case 0x5:
-			params.type = NVOS32_TYPE_STENCIL;
-			params.attr |= DRF_DEF(OS32, _ATTR, _DEPTH, _32);
-			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _BLOCK_LINEAR);
-			params.attr |= DRF_DEF(OS32, _ATTR, _Z_TYPE, _FIXED);
-			params.attr |= DRF_DEF(OS32, _ATTR, _ZS_PACKING, _Z24S8);
-			params.attr |= DRF_DEF(OS32, _ATTR, _COMPR, _NONE);
-			break;
-		case 0:
-		case 0x6:
-			break;
-		case 0xfe: /* NV_MMU_PTE_KIND_GENERIC_16BX2: block linear color before Turing */
-			params.type = NVOS32_TYPE_IMAGE;
-			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _BLOCK_LINEAR);
-			break;
-		default:
+		case KIND_UNKNOWN:
 			fprintf(stderr, "[!] unsupported pte_kind(%#x)\n", pte_kind);
 			return VK_ERROR_UNKNOWN;
 	}

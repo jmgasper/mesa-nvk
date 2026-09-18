@@ -6,6 +6,7 @@
 #include "nvkmd_nvrm.h"
 
 #include "util/u_debug.h"
+#include "util/os_time.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -349,6 +350,11 @@ nvkmd_nvrm_exec_ctx_flush(struct nvkmd_ctx *_ctx,
     * short while before blocking on the channel's event. */
    const uint64_t target = hasDoorbell ? ctx->wSeq : (uint32_t)ctx->wSeq;
    const int spinLimit = debug_get_num_option("NVK_NVRM_SPIN", 50000);
+   /* A channel that hit an error never signals its semaphore, so give up
+    * rather than hanging the application for ever. */
+   const uint64_t timeout_us =
+      debug_get_num_option("NVK_NVRM_TIMEOUT_MS", 10000) * 1000ull;
+   const int64_t waitStart = os_time_get();
    for (int round = 0;; round++) {
       uint64_t rSeq = hasDoorbell ? *semAdr : *(uint32_t*)semAdr;
       if (rSeq == target) {
@@ -367,6 +373,15 @@ nvkmd_nvrm_exec_ctx_flush(struct nvkmd_ctx *_ctx,
 			}
 		};
 		int pollRes = poll(pollFds, 1, 1);
+		if (timeout_us != 0 && (uint64_t)(os_time_get() - waitStart) > timeout_us) {
+			fprintf(stderr, "nvrm: channel %#x did not finish within %" PRIu64
+				" ms: rSeq %#" PRIx64 ", wSeq %#" PRIx64 ", GPGet %" PRIu32
+				", GPPut %" PRIu32 ", error notifier %#x\n",
+				(unsigned)ctx->hChannel, timeout_us / 1000, rSeq, ctx->wSeq,
+				userD->GPGet, userD->GPPut,
+				notifiers[NV_CHANNELGPFIFO_NOTIFICATION_TYPE_ERROR].info32);
+			return VK_ERROR_DEVICE_LOST;
+		}
 		if (getenv("NVK_NVRM_DEBUG") != NULL && (round - spinLimit) % 1000 == 0) {
 			NV906F_CTRL_GET_MMU_FAULT_INFO_PARAMS faultInfo = {0};
 			NV_STATUS faultRes = nvRmApiControl(&rm, ctx->hChannel, NV906F_CTRL_CMD_GET_MMU_FAULT_INFO,

@@ -4,6 +4,8 @@
  */
 #include "nvk_physical_device.h"
 
+#include "util/u_debug.h"
+
 #include "nak.h"
 #include "nvk_buffer.h"
 #include "nvk_descriptor_types.h"
@@ -301,7 +303,9 @@ nvk_get_device_extensions(const struct nvk_instance *instance,
 #endif
       .EXT_texel_buffer_alignment = true,
       .EXT_tooling_info = true,
-      .EXT_transform_feedback = true,
+      /* Debug aid while bringing up pre-Turing GPUs: NVK_NO_XFB=1 hides
+       * transform feedback, which OpenGL drivers use on every draw. */
+      .EXT_transform_feedback = !debug_get_bool_option("NVK_NO_XFB", false),
       .EXT_vertex_attribute_divisor = true,
       .EXT_vertex_input_dynamic_state = true,
       .EXT_ycbcr_2plane_444_formats = true,
@@ -721,7 +725,7 @@ nvk_get_device_features(const struct nv_device_info *info,
       .texelBufferAlignment = true,
 
       /* VK_EXT_transform_feedback */
-      .transformFeedback = true,
+      .transformFeedback = !debug_get_bool_option("NVK_NO_XFB", false),
       .geometryStreams = true,
 
       /* VK_EXT_vertex_input_dynamic_state */
